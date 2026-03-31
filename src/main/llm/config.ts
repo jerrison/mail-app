@@ -65,3 +65,7 @@ export function resolveFeatureModelId(
   const quality = normalized.featureTiers[feature];
   return FEATURE_MODEL_IDS[provider][quality];
 }
+
+export function resolveAnthropicValidationModelId(config: Partial<Config>): string {
+  return resolveFeatureModelId(config, "senderLookup", "anthropic");
+}

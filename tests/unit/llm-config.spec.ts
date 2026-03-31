@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   normalizeLlmConfig,
+  resolveAnthropicValidationModelId,
   resolveBuiltInProviderId,
   resolveDefaultAgentProviderId,
   resolveFeatureModelId,
@@ -50,4 +51,25 @@ test("resolves provider-specific model ids from feature quality", () => {
   expect(resolveDefaultAgentProviderId(config)).toBe("openai");
   expect(resolveFeatureModelId(config, "analysis")).toBe("gpt-5-mini");
   expect(resolveFeatureModelId(config, "drafts")).toBe("gpt-5.2");
+});
+
+test("resolves anthropic validation model even when default provider is openai", () => {
+  const config = {
+    llm: {
+      defaultProvider: "openai" as const,
+      featureTiers: {
+        analysis: "balanced" as const,
+        drafts: "best" as const,
+        refinement: "fast" as const,
+        calendaring: "balanced" as const,
+        archiveReady: "balanced" as const,
+        senderLookup: "fast" as const,
+        agentDrafter: "balanced" as const,
+        agentChat: "best" as const,
+      },
+    },
+  };
+
+  expect(resolveFeatureModelId(config, "senderLookup")).toBe("gpt-5-nano");
+  expect(resolveAnthropicValidationModelId(config)).toBe("claude-haiku-4-5-20251001");
 });

@@ -24,6 +24,7 @@ import { getSenderProfile, clearInboxAnalyses, clearInboxPendingDraftsAndTraces,
 import { getEnrichmentBySender } from "../extensions/enrichment-store";
 import { autoUpdateService } from "../services/auto-updater";
 import {
+  resolveAnthropicValidationModelId,
   normalizeLlmConfig,
   resolveBuiltInProviderId,
   resolveDefaultAgentProviderId,
@@ -147,7 +148,7 @@ export function registerSettingsIpc(): void {
         // Resolve model with fallback so config errors don't block validation
         let model: string;
         try {
-          model = getModelIdForFeature("senderLookup");
+          model = resolveAnthropicValidationModelId(getConfig());
         } catch {
           model = "claude-haiku-4-5-20251001";
         }

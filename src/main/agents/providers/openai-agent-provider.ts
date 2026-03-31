@@ -53,7 +53,6 @@ function toOpenAIFunctionTools(tools: AgentToolSpec[]): Array<Record<string, unk
     name: tool.name,
     description: tool.description,
     parameters: z.toJSONSchema(tool.inputSchema),
-    strict: true,
   }));
 }
 

@@ -20,9 +20,17 @@ export default defineConfig({
       fullyParallel: true,
     },
     {
+      name: "electron-setup",
+      testDir: "./tests",
+      testMatch: /electron-runtime\.setup\.ts/,
+      fullyParallel: false,
+      workers: 1,
+    },
+    {
       name: "e2e",
       testDir: "./tests/e2e",
       testMatch: /.*\.spec\.ts/,
+      dependencies: ["electron-setup"],
       // Each worker gets an isolated database via TEST_WORKER_INDEX,
       // so E2E tests can now run fully in parallel across files.
       // Tests within a describe block stay serial (they share an Electron instance).
@@ -33,6 +41,7 @@ export default defineConfig({
       testDir: "./tests",
       testMatch: /.*\.spec\.ts/,
       testIgnore: [/unit\//, /e2e\//, /problematic\//],
+      dependencies: ["electron-setup"],
       fullyParallel: true,
     },
     {

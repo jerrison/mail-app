@@ -55,7 +55,7 @@ rebuild_for_node() {
 rebuild_for_electron() {
     log_info "Rebuilding better-sqlite3 for Electron..."
     rm -rf node_modules/better-sqlite3/build node_modules/better-sqlite3/prebuilds 2>/dev/null || true
-    npx @electron/rebuild --force --build-from-source 2>/dev/null || {
+    npm exec -- electron-rebuild --force --build-from-source -w better-sqlite3 2>/dev/null || {
         log_error "Failed to rebuild better-sqlite3 for Electron"
         exit 1
     }

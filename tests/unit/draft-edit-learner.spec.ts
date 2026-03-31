@@ -39,4 +39,17 @@ test.describe("draft-edit learner LLM routing", () => {
     expect(code).toContain("llm,");
     expect(code).toContain("model: getModelIdForFeature(\"drafts\")");
   });
+
+  test("memory IPC injects shared llm/model for draft-memory promotion consolidation", () => {
+    const code = readFileSync(
+      path.join(process.cwd(), "src/main/ipc/memory.ipc.ts"),
+      "utf-8"
+    );
+
+    expect(code).toContain("const llm = createBuiltInLlmClient(config);");
+    expect(code).toContain("getModelIdForFeature(\"drafts\")");
+    expect(code).toContain("getModelIdForFeature(\"analysis\")");
+    expect(code).toContain("consolidateMemoryScopes(");
+    expect(code).toContain("{ llm, model }");
+  });
 });

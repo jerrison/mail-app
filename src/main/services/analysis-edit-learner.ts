@@ -19,8 +19,8 @@ import { randomUUID } from "crypto";
 import { consolidateMemoryScopes, filterAgainstPromotedMemories, runLearnerJsonPrompt } from "./draft-edit-learner";
 import { normalizeScope, CONSUMER_DOMAINS } from "./memory-learner-utils";
 import type { Memory, MemoryScope, DraftMemory } from "../../shared/types";
-import { createBuiltInLlmClient } from "../llm";
 import type { BuiltInLlmClient } from "../llm/types";
+import type { LearnerLlmDeps } from "./draft-edit-learner";
 
 /** Promotion threshold — lower than drafting (3) since priority overrides are rarer */
 const PROMOTION_THRESHOLD = 2;
@@ -53,18 +53,6 @@ export interface AnalysisLearnResult {
   draftMemoriesCreated: number;
 }
 
-type LearnerLlmDeps = {
-  llm: BuiltInLlmClient;
-  model: string;
-};
-
-function resolveLearnerLlmDeps(deps?: Partial<LearnerLlmDeps>): LearnerLlmDeps {
-  return {
-    llm: deps?.llm ?? createBuiltInLlmClient({ anthropicApiKey: process.env.ANTHROPIC_API_KEY }),
-    model: deps?.model ?? "claude-sonnet-4-20250514",
-  };
-}
-
 /**
  * Learn from a priority override with an explicit reason.
  * Saves directly as a promoted memory — no draft memory tier needed.
@@ -75,13 +63,12 @@ export async function learnFromPriorityOverrideWithReason(params: {
   senderDomain: string;
   reason: string;
   emailId: string;
-}, deps?: Partial<LearnerLlmDeps>): Promise<{ memory: Memory; saved: boolean }> {
+}, deps: LearnerLlmDeps): Promise<{ memory: Memory; saved: boolean }> {
   const { saveMemory, getMemories } = await import("../db");
-  const llmDeps = resolveLearnerLlmDeps(deps);
   const { accountId, senderEmail, senderDomain, reason, emailId } = params;
 
   // Classify scope via shared LLM client
-  const scope = await classifyScope(reason, senderEmail, senderDomain, llmDeps);
+  const scope = await classifyScope(reason, senderEmail, senderDomain, deps);
 
   const now = Date.now();
   const memory: Memory = {
@@ -105,7 +92,7 @@ export async function learnFromPriorityOverrideWithReason(params: {
     existing,
     accountId,
     { source: "priority-override", memoryType: "analysis" },
-    llmDeps,
+    deps,
   );
 
   if (result.action === "duplicate") {
@@ -132,7 +119,7 @@ export async function learnFromPriorityOverrideWithReason(params: {
  */
 export async function learnFromPriorityOverrideInferred(
   override: AnalysisOverride,
-  deps?: Partial<LearnerLlmDeps>,
+  deps: LearnerLlmDeps,
 ): Promise<AnalysisLearnResult> {
   const {
     getDraftMemories,
@@ -143,13 +130,12 @@ export async function learnFromPriorityOverrideInferred(
     saveMemory,
     getMemories,
   } = await import("../db");
-  const llmDeps = resolveLearnerLlmDeps(deps);
   const { accountId, senderEmail, senderDomain, subject } = override;
 
   console.log(`[AnalysisEditLearner] Inferring patterns from priority override: ${formatOverrideDescription(override)}`);
 
   // 1. Extract observations via Claude
-  const observations = await analyzeOverride(override, llmDeps);
+  const observations = await analyzeOverride(override, deps);
   if (!observations || observations.length === 0) {
     console.log(`[AnalysisEditLearner] No observations extracted — nothing to save`);
     return { promoted: [], draftMemoriesCreated: 0 };
@@ -157,7 +143,7 @@ export async function learnFromPriorityOverrideInferred(
 
   // 2. Filter against already-promoted analysis memories
   const promotedMemories = getMemories(accountId, "analysis").filter(m => m.enabled);
-  const filteredObservations = await filterAgainstPromotedMemories(observations, promotedMemories, llmDeps);
+  const filteredObservations = await filterAgainstPromotedMemories(observations, promotedMemories, deps);
   if (filteredObservations.length === 0) {
     console.log(`[AnalysisEditLearner] All observations already covered by promoted memories`);
     return { promoted: [], draftMemoriesCreated: 0 };
@@ -169,7 +155,7 @@ export async function learnFromPriorityOverrideInferred(
   // 4. Match observations to existing draft memories
   let matches: Array<{ observationIndex: number; matchedDraftMemoryId: string | null }>;
   if (existingDraftMemories.length > 0) {
-    matches = await matchAnalysisDraftMemories(filteredObservations, existingDraftMemories, llmDeps);
+    matches = await matchAnalysisDraftMemories(filteredObservations, existingDraftMemories, deps);
   } else {
     matches = filteredObservations.map((_, i) => ({ observationIndex: i, matchedDraftMemoryId: null }));
   }
@@ -198,7 +184,7 @@ export async function learnFromPriorityOverrideInferred(
           { content: updated.content, scope: updated.scope, scopeValue: updated.scopeValue === null || updated.scope === "global" ? null : updated.scopeValue },
           currentPromoted, accountId,
           { source: "priority-override", memoryType: "analysis" },
-          llmDeps,
+          deps,
         );
 
         if (result.action === "duplicate") {

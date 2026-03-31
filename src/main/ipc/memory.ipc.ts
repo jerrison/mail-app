@@ -256,11 +256,17 @@ Respond in JSON only: {"scope":"...","scopeValue":"...","content":"..."}`,
 
         const memoryType = dm.memoryType ?? "drafting";
         const source = memoryType === "analysis" ? "priority-override" : "draft-edit";
+        const config = getConfig();
+        const llm = createBuiltInLlmClient(config);
+        const model = memoryType === "analysis"
+          ? getModelIdForFeature("analysis")
+          : getModelIdForFeature("drafts");
         const existingMemories = getMemories(accountId, memoryType).filter(m => m.enabled);
         const result = await consolidateMemoryScopes(
           { content: dm.content, scope: dm.scope, scopeValue: dm.scope === "global" ? null : dm.scopeValue },
           existingMemories, accountId,
           { source, memoryType },
+          { llm, model },
         );
 
         if (result.action === "duplicate") {

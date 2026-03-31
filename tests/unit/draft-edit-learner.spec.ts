@@ -33,11 +33,21 @@ test.describe("draft-edit learner LLM routing", () => {
 
     expect(code).toContain("createBuiltInLlmClient");
     expect(code).toContain("const llm = createBuiltInLlmClient(config);");
-    expect(code).toContain("model: getModelIdForFeature(\"drafts\")");
-    expect(code).toContain("learnFromDraftEdit({");
-    expect(code).toContain("}, {");
+    expect(code).toContain("model: getModelIdForFeature(\"drafts\"),");
+    expect(code).toContain("learnFromDraftEdit(params, {");
     expect(code).toContain("llm,");
-    expect(code).toContain("model: getModelIdForFeature(\"drafts\")");
+    expect(code).toContain("queueDraftEditLearning({");
+  });
+
+  test("compose IPC isolates draft learning failures from the send result", () => {
+    const code = readFileSync(
+      path.join(process.cwd(), "src/main/ipc/compose.ipc.ts"),
+      "utf-8"
+    );
+
+    expect(code).toContain("function queueDraftEditLearning(");
+    expect(code).toContain("console.error(`${logPrefix} Draft edit learning unavailable:`, err);");
+    expect(code).toContain("queueDraftEditLearning({");
   });
 
   test("memory IPC injects shared llm/model for draft-memory promotion consolidation", () => {

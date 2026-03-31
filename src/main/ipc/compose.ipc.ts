@@ -249,6 +249,40 @@ function notifyDraftEditLearned(payload: {
   win.webContents.send("draft-edit:learned", payload);
 }
 
+function queueDraftEditLearning(
+  params: {
+    threadId: string;
+    accountId: string;
+    sentBodyHtml: string;
+    sentBodyText: string;
+  },
+  logPrefix: "[Compose]" | "[DEMO]",
+): void {
+  try {
+    const config = getConfig();
+    const llm = createBuiltInLlmClient(config);
+    learnFromDraftEdit(params, {
+      llm,
+      model: getModelIdForFeature("drafts"),
+    }).then((result) => {
+      if (result && (result.promoted.length > 0 || result.draftMemoriesCreated > 0)) {
+        console.log(
+          `${logPrefix} Draft edit learning: ${result.promoted.length} promoted, ${result.draftMemoriesCreated} draft memories created/voted`
+        );
+        notifyDraftEditLearned({
+          promoted: result.promoted,
+          draftMemoriesCreated: result.draftMemoriesCreated,
+          draftMemoryIds: result.draftMemoryIds,
+        });
+      }
+    }).catch((err) => {
+      console.error(`${logPrefix} Draft edit learning failed:`, err);
+    });
+  } catch (err) {
+    console.error(`${logPrefix} Draft edit learning unavailable:`, err);
+  }
+}
+
 export function registerComposeIpc(): void {
   // Send a new message
   ipcMain.handle(
@@ -259,28 +293,12 @@ export function registerComposeIpc(): void {
         await new Promise((resolve) => setTimeout(resolve, 500));
         // Still trigger draft-edit learning in demo mode so we can test it
         if (options.threadId && !options.isForward) {
-          const config = getConfig();
-          const llm = createBuiltInLlmClient(config);
-          learnFromDraftEdit({
+          queueDraftEditLearning({
             threadId: options.threadId,
             accountId: options.accountId,
             sentBodyHtml: options.bodyHtml || "",
-            sentBodyText: options.bodyText,
-          }, {
-            llm,
-            model: getModelIdForFeature("drafts"),
-          }).then((result) => {
-            if (result && (result.promoted.length > 0 || result.draftMemoriesCreated > 0)) {
-              console.log(`[DEMO] Draft edit learning: ${result.promoted.length} promoted, ${result.draftMemoriesCreated} draft memories created/voted`);
-              notifyDraftEditLearned({
-                promoted: result.promoted,
-                draftMemoriesCreated: result.draftMemoriesCreated,
-                draftMemoryIds: result.draftMemoryIds,
-              });
-            }
-          }).catch((err) => {
-            console.error("[DEMO] Draft edit learning failed:", err);
-          });
+            sentBodyText: options.bodyText || "",
+          }, "[DEMO]");
         }
         return { success: true, data: { id: `demo-sent-${Date.now()}`, threadId: `demo-thread-${Date.now()}` } };
       }
@@ -316,32 +334,16 @@ export function registerComposeIpc(): void {
         // After sending a reply, mark the thread as read and re-queue analysis
         // Skip for forwards — forwarding doesn't mean the user addressed the original conversation
         if (options.threadId && !options.isForward) {
-          const config = getConfig();
-          const llm = createBuiltInLlmClient(config);
           triggerThreadReanalysis(options.threadId, options.accountId);
           // Fire-and-forget: mark thread read so Gmail shows it as read
           markThreadAsReadAfterSend(client, options.threadId, options.accountId);
           // Fire-and-forget: learn from draft edits (compare AI draft vs what was sent)
-          learnFromDraftEdit({
+          queueDraftEditLearning({
             threadId: options.threadId,
             accountId: options.accountId,
             sentBodyHtml: options.bodyHtml || "",
-            sentBodyText: options.bodyText,
-          }, {
-            llm,
-            model: getModelIdForFeature("drafts"),
-          }).then((result) => {
-            if (result && (result.promoted.length > 0 || result.draftMemoriesCreated > 0)) {
-              console.log(`[Compose] Draft edit learning: ${result.promoted.length} promoted, ${result.draftMemoriesCreated} draft memories created/voted`);
-              notifyDraftEditLearned({
-                promoted: result.promoted,
-                draftMemoriesCreated: result.draftMemoriesCreated,
-                draftMemoryIds: result.draftMemoryIds,
-              });
-            }
-          }).catch((err) => {
-            console.error("[Compose] Draft edit learning failed:", err);
-          });
+            sentBodyText: options.bodyText || "",
+          }, "[Compose]");
         }
 
         return { success: true, data: { ...result, queued: false } };

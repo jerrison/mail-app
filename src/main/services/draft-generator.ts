@@ -1,7 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type { GmailClient } from "./gmail-client";
 import { CalendaringAgent } from "./calendaring-agent";
 import { getEnrichmentBySender } from "../extensions/enrichment-store";
+import { createBuiltInLlmClient } from "../llm";
+import type { BuiltInLlmClient } from "../llm/types";
 import {
   DEFAULT_DRAFT_PROMPT,
   DRAFT_FORMAT_SUFFIX,
@@ -33,13 +34,13 @@ function extractReplyAllCc(email: { from: string; to: string; cc?: string }, use
 }
 
 export class DraftGenerator {
-  private anthropic: Anthropic;
+  private llm: BuiltInLlmClient;
   private model: string;
   private calendaringModel: string;
   private prompt: string;
 
-  constructor(model: string = "claude-sonnet-4-20250514", prompt: string = DEFAULT_DRAFT_PROMPT, calendaringModel?: string) {
-    this.anthropic = new Anthropic();
+  constructor(model: string = "claude-sonnet-4-20250514", prompt: string = DEFAULT_DRAFT_PROMPT, calendaringModel?: string, llmClient?: BuiltInLlmClient) {
+    this.llm = llmClient ?? createBuiltInLlmClient({ anthropicApiKey: process.env.ANTHROPIC_API_KEY });
     this.model = model;
     this.calendaringModel = calendaringModel ?? model;
     // Always append format suffix so the user can't accidentally remove it
@@ -81,7 +82,7 @@ ${profile.summary}
 
     // Check for scheduling if EA is enabled
     if (eaConfig?.enabled && eaConfig.email) {
-      const calAgent = new CalendaringAgent(this.calendaringModel);
+      const calAgent = new CalendaringAgent(this.calendaringModel, undefined, this.llm);
       calendaringResult = await calAgent.analyze(email);
 
       if (
@@ -98,13 +99,11 @@ Do NOT propose specific times yourself - defer to the assistant.`;
       }
     }
 
-    const response = await this.anthropic.messages.create({
+    const response = await this.llm.generate({
       model: this.model,
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: `${this.prompt}
+      maxOutputTokens: 1024,
+      mode: "text",
+      input: `${this.prompt}
 ${senderContext}
 ${calendaringContext}
 ---
@@ -121,17 +120,14 @@ Subject: ${email.subject}
 Date: ${email.date}
 
 ${email.body}`,
-        },
-      ],
     });
 
-    const textBlock = response.content.find((block) => block.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      throw new Error("No text response from Claude");
+    if (!response.text) {
+      throw new Error("No text response from LLM");
     }
 
     return {
-      body: textBlock.text.trim(),
+      body: response.text.trim(),
       cc: cc.length > 0 ? cc : undefined,
       calendaringResult,
     };
@@ -164,13 +160,11 @@ ${profile.summary}
       }
     }
 
-    const response = await this.anthropic.messages.create({
+    const response = await this.llm.generate({
       model: this.model,
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: `${this.prompt}
+      maxOutputTokens: 1024,
+      mode: "text",
+      input: `${this.prompt}
 ${recipientContext}
 ---
 Compose a new email (not a reply to an existing thread).
@@ -180,16 +174,13 @@ Subject: ${subject}
 
 INSTRUCTIONS:
 ${instructions}`,
-        },
-      ],
     });
 
-    const textBlock = response.content.find((block) => block.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      throw new Error("No text response from Claude");
+    if (!response.text) {
+      throw new Error("No text response from LLM");
     }
 
-    return { body: textBlock.text.trim() };
+    return { body: response.text.trim() };
   }
 
   async generateForward(
@@ -221,13 +212,11 @@ ${profile.summary}
       ? email.subject
       : `Fwd: ${email.subject}`;
 
-    const response = await this.anthropic.messages.create({
+    const response = await this.llm.generate({
       model: this.model,
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: `${this.prompt}
+      maxOutputTokens: 1024,
+      mode: "text",
+      input: `${this.prompt}
 ${recipientContext}
 ---
 Write the text for a forwarded email. The original email will be automatically appended as quoted content, so do not reproduce it.
@@ -244,16 +233,13 @@ Subject: ${email.subject}
 Date: ${email.date}
 
 ${email.body}`,
-        },
-      ],
     });
 
-    const textBlock = response.content.find((block) => block.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      throw new Error("No text response from Claude");
+    if (!response.text) {
+      throw new Error("No text response from LLM");
     }
 
-    return { body: textBlock.text.trim(), subject };
+    return { body: response.text.trim(), subject };
   }
 
   async createDraft(

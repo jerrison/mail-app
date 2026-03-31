@@ -1,10 +1,10 @@
 import { ipcMain } from "electron";
-import Anthropic from "@anthropic-ai/sdk";
 import { DraftGenerator } from "../services/draft-generator";
 import { generateDraftForEmail } from "../services/draft-pipeline";
 import { getEmail, deleteDraft, deleteAgentTrace, clearInboxPendingDraftsAndTraces, getInboxPendingDraftsWithGmail, updateDraftAgentTaskId } from "../db";
 import { saveDraftAndSync, deleteGmailDraftById, deleteGmailDraftsBatch } from "../services/gmail-draft-sync";
 import { getConfig, getModelIdForFeature } from "./settings.ipc";
+import { createBuiltInLlmClient } from "../llm";
 import { buildMemoryContext } from "../services/memory-context";
 import { prefetchService } from "../services/prefetch-service";
 import { agentCoordinator } from "../agents/agent-coordinator";
@@ -77,7 +77,7 @@ export function registerDraftsIpc(): void {
         }
 
         const config = getConfig();
-        const anthropic = new Anthropic();
+        const llm = createBuiltInLlmClient(config);
 
         // Include relevant memories so refinement doesn't contradict saved preferences
         const senderMatch = email.from.match(/<([^>]+)>/) ?? email.from.match(/([^\s<]+@[^\s>]+)/);
@@ -89,13 +89,11 @@ export function registerDraftsIpc(): void {
           ? `\n${memoryContext}\n---\n`
           : "";
 
-        const response = await anthropic.messages.create({
+        const response = await llm.generate({
           model: getModelIdForFeature("refinement"),
-          max_tokens: 1024,
-          messages: [
-            {
-              role: "user",
-              content: `Refine this email draft based on the feedback provided.
+          maxOutputTokens: 1024,
+          mode: "text",
+          input: `Refine this email draft based on the feedback provided.
 ${memorySection}
 ORIGINAL EMAIL BEING REPLIED TO:
 From: ${email.from}
@@ -115,16 +113,13 @@ ${critique}
 Output ONLY the refined draft text - no explanations, no preamble. Just the improved email body.
 
 FORMATTING: Write plain text paragraphs separated by blank lines. Do NOT use HTML tags of any kind (<p>, <br>, <div>, <b>, <i>, <ul>, <ol>, etc.). For bold, wrap text in double asterisks like **bold text**. For italic, wrap text in single asterisks like *italic text*. For bullet lists, use lines starting with "- ". For numbered lists, use "1. ", "2. ", etc.`,
-            },
-          ],
         });
 
-        const textBlock = response.content.find((block) => block.type === "text");
-        if (!textBlock || textBlock.type !== "text") {
-          throw new Error("No text response from Claude");
+        if (!response.text) {
+          throw new Error("No text response from LLM");
         }
 
-        const refinedDraft = textBlock.text.trim();
+        const refinedDraft = response.text.trim();
 
         // Save refined draft and sync to Gmail
         saveDraftAndSync(emailId, refinedDraft, "edited");

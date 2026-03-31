@@ -5,18 +5,19 @@
  * direct import in Playwright tests. We re-implement the testable logic
  * inline (following the pattern from pending-actions.spec.ts) and test the
  * core behaviors: reply-all CC extraction, reply address extraction,
- * draft creation flow, and the Claude API interaction pattern.
+ * draft creation flow, and provider-neutral LLM interaction pattern.
  */
 import { test, expect } from "@playwright/test";
-import {
-  MockAnthropic,
-  mockAnthropicResponse,
-  queueAnthropicResponses,
-  resetAnthropicMock,
-  getCapturedRequests,
-} from "../mocks/anthropic-api-mock";
+import { readFileSync } from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { MockBuiltInLlmClient } from "../mocks/built-in-llm-mock";
+import type { BuiltInLlmClient } from "../../src/main/llm/types";
 import type { AnalysisResult, EAConfig } from "../../src/shared/types";
 import { DEFAULT_DRAFT_PROMPT, DRAFT_FORMAT_SUFFIX } from "../../src/shared/types";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const srcDir = path.join(__dirname, "../../src");
 
 // ---------------------------------------------------------------------------
 // Re-implementation of DraftGenerator's extractReplyAllCc (private function)
@@ -105,34 +106,63 @@ interface MockGmailClient {
 }
 
 class TestDraftGenerator {
-  anthropic: InstanceType<typeof MockAnthropic>;
+  llm: BuiltInLlmClient;
   private model: string;
+  private calendaringModel: string;
   private prompt: string;
 
-  constructor(model: string = "claude-sonnet-4-20250514") {
-    this.anthropic = new MockAnthropic();
+  constructor(
+    model: string = "claude-sonnet-4-20250514",
+    prompt: string = DEFAULT_DRAFT_PROMPT,
+    calendaringModel?: string,
+    llmClient?: BuiltInLlmClient
+  ) {
+    this.llm = llmClient ?? new MockBuiltInLlmClient();
     this.model = model;
-    this.prompt = DEFAULT_DRAFT_PROMPT + DRAFT_FORMAT_SUFFIX;
+    this.calendaringModel = calendaringModel ?? model;
+    this.prompt = prompt + DRAFT_FORMAT_SUFFIX;
   }
 
   async generateDraft(
     email: Email,
     analysis: AnalysisResult,
+    eaConfig?: EAConfig,
     options?: { userEmail?: string }
   ): Promise<GeneratedDraftResponse> {
     let cc: string[] = [];
+    let calendaringResult: GeneratedDraftResponse["calendaringResult"];
 
     if (options?.userEmail) {
       cc.push(...extractReplyAllCc(email, options.userEmail));
     }
 
-    const response = await this.anthropic.messages.create({
+    if (eaConfig?.enabled && eaConfig.email) {
+      const calResponse = await this.llm.generate({
+        model: this.calendaringModel,
+        maxOutputTokens: 512,
+        mode: "json",
+        input: "calendaring analysis",
+      });
+      const parsed = JSON.parse(calResponse.text || "{}");
+      calendaringResult = {
+        hasSchedulingContext: Boolean(parsed.hasSchedulingContext),
+        action: parsed.action || "none",
+        reason: parsed.reason || "",
+      };
+
+      if (
+        calendaringResult.hasSchedulingContext &&
+        calendaringResult.action === "defer_to_ea"
+      ) {
+        cc.push(eaConfig.email);
+      }
+    }
+
+    const response = await this.llm.generate({
       model: this.model,
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: `${this.prompt}
+      maxOutputTokens: 1024,
+      mode: "text",
+      input: `${this.prompt}
 ---
 ANALYSIS (for context):
 Reason for reply: ${analysis.reason}
@@ -147,18 +177,16 @@ Subject: ${email.subject}
 Date: ${email.date}
 
 ${email.body}`,
-        },
-      ],
     });
 
-    const textBlock = response.content.find((block) => block.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      throw new Error("No text response from Claude");
+    if (!response.text) {
+      throw new Error("No text response from LLM");
     }
 
     return {
-      body: textBlock.text.trim(),
+      body: response.text.trim(),
       cc: cc.length > 0 ? cc : undefined,
+      calendaringResult,
     };
   }
 
@@ -167,13 +195,11 @@ ${email.body}`,
     subject: string,
     instructions: string
   ): Promise<GeneratedDraftResponse> {
-    const response = await this.anthropic.messages.create({
+    const response = await this.llm.generate({
       model: this.model,
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: `${this.prompt}
+      maxOutputTokens: 1024,
+      mode: "text",
+      input: `${this.prompt}
 ---
 Compose a new email (not a reply to an existing thread).
 
@@ -182,16 +208,13 @@ Subject: ${subject}
 
 INSTRUCTIONS:
 ${instructions}`,
-        },
-      ],
     });
 
-    const textBlock = response.content.find((block) => block.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      throw new Error("No text response from Claude");
+    if (!response.text) {
+      throw new Error("No text response from LLM");
     }
 
-    return { body: textBlock.text.trim() };
+    return { body: response.text.trim() };
   }
 
   async createDraft(
@@ -279,15 +302,12 @@ function makeAnalysis(overrides: Partial<AnalysisResult> = {}): AnalysisResult {
 // ---------------------------------------------------------------------------
 
 test.describe("DraftGenerator - generateDraft", () => {
-  test.beforeEach(() => {
-    resetAnthropicMock();
-  });
-
   test("returns body text from Claude response", async () => {
-    mockAnthropicResponse({
-      text: "Thanks for sending the Q3 budget proposal. I'll review sections 3 and 4 and get back to you by Friday.",
-    });
-    const generator = new TestDraftGenerator();
+    const mock = new MockBuiltInLlmClient();
+    mock.push(
+      "Thanks for sending the Q3 budget proposal. I'll review sections 3 and 4 and get back to you by Friday."
+    );
+    const generator = new TestDraftGenerator("claude-sonnet-4-20250514", DEFAULT_DRAFT_PROMPT, undefined, mock);
 
     const result = await generator.generateDraft(
       makeEmail(),
@@ -300,15 +320,16 @@ test.describe("DraftGenerator - generateDraft", () => {
   });
 
   test("includes reply-all CC recipients via extractReplyAllCc", async () => {
-    mockAnthropicResponse({ text: "Sounds good, let's coordinate." });
-    const generator = new TestDraftGenerator();
+    const mock = new MockBuiltInLlmClient();
+    mock.push("Sounds good, let's coordinate.");
+    const generator = new TestDraftGenerator("claude-sonnet-4-20250514", DEFAULT_DRAFT_PROMPT, undefined, mock);
     const email = makeEmail({
       from: "alice@example.com",
       to: "user@company.com, bob@example.com",
       cc: "carol@example.com",
     });
 
-    const result = await generator.generateDraft(email, makeAnalysis(), {
+    const result = await generator.generateDraft(email, makeAnalysis(), undefined, {
       userEmail: "user@company.com",
     });
 
@@ -320,14 +341,15 @@ test.describe("DraftGenerator - generateDraft", () => {
   });
 
   test("cc is undefined when no extra recipients", async () => {
-    mockAnthropicResponse({ text: "Will do." });
-    const generator = new TestDraftGenerator();
+    const mock = new MockBuiltInLlmClient();
+    mock.push("Will do.");
+    const generator = new TestDraftGenerator("claude-sonnet-4-20250514", DEFAULT_DRAFT_PROMPT, undefined, mock);
     const email = makeEmail({
       from: "alice@example.com",
       to: "user@company.com",
     });
 
-    const result = await generator.generateDraft(email, makeAnalysis(), {
+    const result = await generator.generateDraft(email, makeAnalysis(), undefined, {
       userEmail: "user@company.com",
     });
 
@@ -335,23 +357,24 @@ test.describe("DraftGenerator - generateDraft", () => {
   });
 
   test("includes analysis context in the prompt", async () => {
-    mockAnthropicResponse({ text: "Reply body" });
-    const generator = new TestDraftGenerator();
+    const mock = new MockBuiltInLlmClient();
+    mock.push("Reply body");
+    const generator = new TestDraftGenerator("claude-sonnet-4-20250514", DEFAULT_DRAFT_PROMPT, undefined, mock);
 
     await generator.generateDraft(makeEmail(), makeAnalysis({
       reason: "Urgent budget question",
       priority: "high",
     }));
 
-    const requests = getCapturedRequests();
-    const content = (requests[0].messages[0] as { content: string }).content;
+    const content = mock.calls[0].input;
     expect(content).toContain("Reason for reply: Urgent budget question");
     expect(content).toContain("Priority: high");
   });
 
   test("includes email details in the prompt", async () => {
-    mockAnthropicResponse({ text: "Reply body" });
-    const generator = new TestDraftGenerator();
+    const mock = new MockBuiltInLlmClient();
+    mock.push("Reply body");
+    const generator = new TestDraftGenerator("claude-sonnet-4-20250514", DEFAULT_DRAFT_PROMPT, undefined, mock);
     const email = makeEmail({
       from: "bob@corp.com",
       subject: "Project Update",
@@ -359,10 +382,30 @@ test.describe("DraftGenerator - generateDraft", () => {
 
     await generator.generateDraft(email, makeAnalysis());
 
-    const requests = getCapturedRequests();
-    const content = (requests[0].messages[0] as { content: string }).content;
+    const content = mock.calls[0].input;
     expect(content).toContain("From: bob@corp.com");
     expect(content).toContain("Subject: Project Update");
+  });
+
+  test("uses text mode for draft generation and reuses same llm for calendaring", async () => {
+    const mock = new MockBuiltInLlmClient();
+    mock
+      .push('{"hasSchedulingContext": true, "action": "defer_to_ea", "reason": "Scheduling request"}')
+      .push("Draft body");
+    const generator = new TestDraftGenerator("draft-model", DEFAULT_DRAFT_PROMPT, "cal-model", mock);
+
+    const result = await generator.generateDraft(
+      makeEmail(),
+      makeAnalysis(),
+      { enabled: true, email: "ea@company.com", name: "EA" }
+    );
+
+    expect(result.cc).toContain("ea@company.com");
+    expect(mock.calls).toHaveLength(2);
+    expect(mock.calls[0].model).toBe("cal-model");
+    expect(mock.calls[0].mode).toBe("json");
+    expect(mock.calls[1].model).toBe("draft-model");
+    expect(mock.calls[1].mode).toBe("text");
   });
 });
 
@@ -371,15 +414,10 @@ test.describe("DraftGenerator - generateDraft", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("DraftGenerator - composeNewEmail", () => {
-  test.beforeEach(() => {
-    resetAnthropicMock();
-  });
-
   test("returns body for new email composition", async () => {
-    mockAnthropicResponse({
-      text: "Hi team, I wanted to share the project update for this sprint.",
-    });
-    const generator = new TestDraftGenerator();
+    const mock = new MockBuiltInLlmClient();
+    mock.push("Hi team, I wanted to share the project update for this sprint.");
+    const generator = new TestDraftGenerator("claude-sonnet-4-20250514", DEFAULT_DRAFT_PROMPT, undefined, mock);
 
     const result = await generator.composeNewEmail(
       ["team@company.com"],
@@ -395,8 +433,9 @@ test.describe("DraftGenerator - composeNewEmail", () => {
   });
 
   test("includes recipients and instructions in the prompt", async () => {
-    mockAnthropicResponse({ text: "Draft body" });
-    const generator = new TestDraftGenerator();
+    const mock = new MockBuiltInLlmClient();
+    mock.push("Draft body");
+    const generator = new TestDraftGenerator("claude-sonnet-4-20250514", DEFAULT_DRAFT_PROMPT, undefined, mock);
 
     await generator.composeNewEmail(
       ["alice@example.com", "bob@example.com"],
@@ -404,11 +443,11 @@ test.describe("DraftGenerator - composeNewEmail", () => {
       "Introduce yourself"
     );
 
-    const requests = getCapturedRequests();
-    const content = (requests[0].messages[0] as { content: string }).content;
+    const content = mock.calls[0].input;
     expect(content).toContain("alice@example.com, bob@example.com");
     expect(content).toContain("Hello");
     expect(content).toContain("Introduce yourself");
+    expect(mock.calls[0].mode).toBe("text");
   });
 });
 
@@ -417,10 +456,6 @@ test.describe("DraftGenerator - composeNewEmail", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("DraftGenerator - createDraft", () => {
-  test.beforeEach(() => {
-    resetAnthropicMock();
-  });
-
   test("calls gmailClient.createDraft with correct params", async () => {
     const generator = new TestDraftGenerator();
     const email = makeEmail();
@@ -508,6 +543,16 @@ test.describe("DraftGenerator - createDraft", () => {
     expect(result.error).toBe("Gmail API rate limit exceeded");
     expect(result.emailId).toBe("msg-1");
   });
+});
+
+test("DraftGenerator source accepts BuiltInLlmClient injection", () => {
+  const code = readFileSync(path.join(srcDir, "main/services/draft-generator.ts"), "utf-8");
+  expect(code).toContain("import { createBuiltInLlmClient } from \"../llm\";");
+  expect(code).toContain("import type { BuiltInLlmClient } from \"../llm/types\";");
+  expect(code).toContain("constructor(model: string = \"claude-sonnet-4-20250514\", prompt: string = DEFAULT_DRAFT_PROMPT, calendaringModel?: string, llmClient?: BuiltInLlmClient)");
+  expect(code).toContain("this.llm = llmClient ?? createBuiltInLlmClient({ anthropicApiKey: process.env.ANTHROPIC_API_KEY });");
+  expect(code).toContain("const calAgent = new CalendaringAgent(this.calendaringModel, undefined, this.llm);");
+  expect(code).toContain("mode: \"text\"");
 });
 
 // ---------------------------------------------------------------------------

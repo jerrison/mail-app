@@ -18,6 +18,7 @@ import { generateDraftForEmail, generateForwardForEmail } from "../services/draf
 import { saveDraftAndSync } from "../services/gmail-draft-sync";
 import { DEFAULT_STYLE_PROMPT } from "../../shared/types";
 import { populatePrivateProviderConfig } from "./private-providers-main";
+import { createBuiltInLlmClient } from "../llm";
 
 /**
  * Coordinates the agent utility process from the main process.
@@ -106,7 +107,8 @@ export class AgentCoordinator {
       }
 
       const enableSenderLookup = config.enableSenderLookup ?? true;
-      const generator = new DraftGenerator(getModelIdForFeature("drafts"), prompt, getModelIdForFeature("calendaring"));
+      const llm = createBuiltInLlmClient(config);
+      const generator = new DraftGenerator(getModelIdForFeature("drafts"), prompt, getModelIdForFeature("calendaring"), llm);
       return generator.composeNewEmail(to, subject, instructions, { enableSenderLookup });
     },
     generateForward: async (emailId: string, accountId: string, instructions: string, to?: string[], cc?: string[], bcc?: string[]) =>

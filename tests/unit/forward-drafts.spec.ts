@@ -327,3 +327,21 @@ test.describe("onDraftSaved propagation: composeMode and to", () => {
     expect(code).toContain("syncDraftToGmail(emailId, body, syncCc, syncBcc, oldGmailDraftId, syncComposeMode, syncTo)");
   });
 });
+
+test.describe("provider-neutral draft wiring", () => {
+  test("agent coordinator new-email path injects BuiltInLlmClient into DraftGenerator", () => {
+    const code = readFileSync(path.join(srcDir, "main/agents/agent-coordinator.ts"), "utf-8");
+    expect(code).toContain("import { createBuiltInLlmClient } from \"../llm\";");
+    expect(code).toContain("const llm = createBuiltInLlmClient(config);");
+    expect(code).toContain("new DraftGenerator(getModelIdForFeature(\"drafts\"), prompt, getModelIdForFeature(\"calendaring\"), llm)");
+  });
+
+  test("draft refinement uses provider-neutral llm text mode", () => {
+    const code = readFileSync(path.join(srcDir, "main/ipc/drafts.ipc.ts"), "utf-8");
+    expect(code).toContain("import { createBuiltInLlmClient } from \"../llm\";");
+    expect(code).toContain("const llm = createBuiltInLlmClient(config);");
+    expect(code).toContain("model: getModelIdForFeature(\"refinement\")");
+    expect(code).toContain("mode: \"text\"");
+    expect(code).not.toContain("const anthropic = new Anthropic()");
+  });
+});

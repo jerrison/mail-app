@@ -7,6 +7,13 @@
  * fallback, and email-for-draft shaping.
  */
 import { test, expect } from "@playwright/test";
+import { readFileSync } from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { MockBuiltInLlmClient } from "../mocks/built-in-llm-mock";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const srcDir = path.join(__dirname, "../../src");
 
 // =============================================================================
 // Re-implemented pure logic from draft-pipeline.ts
@@ -384,3 +391,78 @@ test.describe("analysis result shaping", () => {
   });
 });
 
+// =============================================================================
+// Tests: llm option wiring and model resolution
+// =============================================================================
+
+test.describe("draft pipeline llm wiring", () => {
+  async function runPipelineLikeFlow(opts: {
+    llm?: MockBuiltInLlmClient;
+    createLlm: () => MockBuiltInLlmClient;
+    models: { analysis: string; drafts: string };
+  }): Promise<{ llm: MockBuiltInLlmClient }> {
+    const llm = opts.llm ?? opts.createLlm();
+    llm.push('{"needs_reply": true, "reason": "Needs response", "priority": "medium"}');
+    llm.push("Draft response body");
+
+    await llm.generate({
+      model: opts.models.analysis,
+      mode: "json",
+      maxOutputTokens: 256,
+      input: "analysis input",
+    });
+    await llm.generate({
+      model: opts.models.drafts,
+      mode: "text",
+      maxOutputTokens: 1024,
+      input: "draft input",
+    });
+
+    return { llm };
+  }
+
+  test("reuses provided llm across analysis + draft generation", async () => {
+    const mock = new MockBuiltInLlmClient();
+    const created: MockBuiltInLlmClient[] = [];
+    const result = await runPipelineLikeFlow({
+      llm: mock,
+      createLlm: () => {
+        const m = new MockBuiltInLlmClient();
+        created.push(m);
+        return m;
+      },
+      models: { analysis: "analysis-model", drafts: "draft-model" },
+    });
+
+    expect(created).toHaveLength(0);
+    expect(result.llm.calls).toHaveLength(2);
+    expect(result.llm.calls[0].model).toBe("analysis-model");
+    expect(result.llm.calls[0].mode).toBe("json");
+    expect(result.llm.calls[1].model).toBe("draft-model");
+    expect(result.llm.calls[1].mode).toBe("text");
+  });
+
+  test("creates llm from config when opts.llm is absent", async () => {
+    const created: MockBuiltInLlmClient[] = [];
+    const result = await runPipelineLikeFlow({
+      createLlm: () => {
+        const m = new MockBuiltInLlmClient();
+        created.push(m);
+        return m;
+      },
+      models: { analysis: "analysis-model", drafts: "draft-model" },
+    });
+
+    expect(created).toHaveLength(1);
+    expect(result.llm).toBe(created[0]);
+    expect(created[0].calls).toHaveLength(2);
+  });
+});
+
+test("draft-pipeline source exposes optional llm and uses shared client", () => {
+  const code = readFileSync(path.join(srcDir, "main/services/draft-pipeline.ts"), "utf-8");
+  expect(code).toContain("llm?: BuiltInLlmClient;");
+  expect(code).toMatch(/\?\?\s*createBuiltInLlmClient\(config\)/);
+  expect(code).toContain("new EmailAnalyzer(getModelIdForFeature(\"analysis\"), config.analysisPrompt ?? undefined, llm)");
+  expect(code).toMatch(/new DraftGenerator\(getModelIdForFeature\("drafts"\),\s*prompt,\s*getModelIdForFeature\("calendaring"\),\s*\w+\)/);
+});

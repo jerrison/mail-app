@@ -15,6 +15,8 @@ import { EmailAnalyzer } from "./email-analyzer";
 import { DraftGenerator } from "./draft-generator";
 import { getAccounts } from "../db";
 import { DEFAULT_STYLE_PROMPT } from "../../shared/types";
+import { createBuiltInLlmClient } from "../llm";
+import type { BuiltInLlmClient } from "../llm/types";
 import type { Email, AnalysisResult, GeneratedDraftResponse, DashboardEmail } from "../../shared/types";
 
 export interface GenerateDraftOptions {
@@ -23,6 +25,8 @@ export interface GenerateDraftOptions {
   accountId?: string;
   /** Optional instructions appended to the prompt (agent use-case). */
   instructions?: string;
+  /** Optional provider-neutral LLM client for tests and call-site sharing. */
+  llm?: BuiltInLlmClient;
 }
 
 export interface GenerateForwardOptions {
@@ -43,6 +47,7 @@ async function buildDraftPipeline(
   emailId: string,
   accountId: string | undefined,
   recipientEmail: string,
+  llm?: BuiltInLlmClient,
 ): Promise<{
   email: DashboardEmail;
   emailForDraft: Email;
@@ -50,6 +55,7 @@ async function buildDraftPipeline(
   prompt: string;
   generator: DraftGenerator;
   emailAccountId: string;
+  llm: BuiltInLlmClient;
 }> {
   const email = getEmail(emailId);
   if (!email) throw new Error(`Email not found: ${emailId}`);
@@ -87,9 +93,10 @@ async function buildDraftPipeline(
     snippet: email.snippet,
   };
 
-  const generator = new DraftGenerator(getModelIdForFeature("drafts"), prompt, getModelIdForFeature("calendaring"));
+  const llmClient = llm ?? createBuiltInLlmClient(config);
+  const generator = new DraftGenerator(getModelIdForFeature("drafts"), prompt, getModelIdForFeature("calendaring"), llmClient);
 
-  return { email, emailForDraft, config, prompt, generator, emailAccountId };
+  return { email, emailForDraft, config, prompt, generator, emailAccountId, llm: llmClient };
 }
 
 /** Extract an email address from a "Name <email>" or bare "email" string. */
@@ -115,12 +122,12 @@ export async function generateDraftForEmail(
     return email ? extractEmail(email.from) : "";
   })();
 
-  const pipeline = await buildDraftPipeline(emailId, accountId, recipientEmail);
-  const { email, emailForDraft, config, emailAccountId } = pipeline;
+  const pipeline = await buildDraftPipeline(emailId, accountId, recipientEmail, opts.llm);
+  const { email, emailForDraft, config, emailAccountId, llm } = pipeline;
 
   // Auto-analyze if not already done (e.g. freshly synced email)
   if (!email.analysis) {
-    const analyzer = new EmailAnalyzer(getModelIdForFeature("analysis"), config.analysisPrompt ?? undefined);
+    const analyzer = new EmailAnalyzer(getModelIdForFeature("analysis"), config.analysisPrompt ?? undefined, llm);
     const analysisResult = await analyzer.analyze(emailForDraft);
     saveAnalysis(emailId, analysisResult.needs_reply, analysisResult.reason, analysisResult.priority);
     email.analysis = {
@@ -135,7 +142,7 @@ export async function generateDraftForEmail(
   let { generator } = pipeline;
   if (instructions) {
     const fullPrompt = `${pipeline.prompt}\n\nADDITIONAL INSTRUCTIONS:\n${instructions}`;
-    generator = new DraftGenerator(getModelIdForFeature("drafts"), fullPrompt, getModelIdForFeature("calendaring"));
+    generator = new DraftGenerator(getModelIdForFeature("drafts"), fullPrompt, getModelIdForFeature("calendaring"), llm);
   }
 
   const analysis: AnalysisResult = {

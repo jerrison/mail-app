@@ -174,6 +174,8 @@ const api = {
       ipcRenderer.invoke("settings:set", config),
     validateApiKey: (apiKey: string): Promise<unknown> =>
       ipcRenderer.invoke("settings:validate-api-key", { apiKey }),
+    validateProviderApiKey: (provider: "anthropic" | "openai", apiKey: string): Promise<unknown> =>
+      ipcRenderer.invoke("settings:validate-provider-api-key", { provider, apiKey }),
     getPrompts: (): Promise<unknown> =>
       ipcRenderer.invoke("settings:get-prompts"),
     setPrompts: (prompts: { analysisPrompt?: string; draftPrompt?: string; archiveReadyPrompt?: string; stylePrompt?: string; agentDrafterPrompt?: string }): Promise<unknown> =>

@@ -120,6 +120,7 @@ export function AgentCommandPalette({ isOpen, onClose }: AgentCommandPaletteProp
 
   const {
     selectedAgentIds,
+    defaultAgentProviderId,
     availableProviders,
     setSelectedAgentIds,
     setAvailableProviders,
@@ -174,21 +175,25 @@ export function AgentCommandPalette({ isOpen, onClose }: AgentCommandPaletteProp
     return allActions.filter((a) => fuzzyMatch(a.label, query));
   }, [query, suggestedActions, quickActions]);
 
-  // When the palette opens, fetch real provider list from the backend if we don't have one yet.
-  // Also auto-select "claude" when nothing is selected.
+  // When the palette opens, refresh the provider list and auto-select the
+  // configured default provider when nothing is currently selected.
   useEffect(() => {
     if (!isOpen) return;
 
-    if (selectedAgentIds.length === 0) {
-      setSelectedAgentIds(["claude"]);
+    if (selectedAgentIds.length === 0 && defaultAgentProviderId) {
+      setSelectedAgentIds([defaultAgentProviderId]);
     }
 
-    if (availableProviders.length === 0) {
-      // Request provider list from backend; the onProviders listener in App.tsx
-      // will update the store when the response arrives.
-      window.api?.agent?.providers?.();
-    }
-  }, [isOpen, selectedAgentIds.length, availableProviders.length, setSelectedAgentIds, setAvailableProviders]);
+    // Request provider list from backend on each open so settings/auth changes
+    // are reflected without requiring a full app reload.
+    window.api?.agent?.providers?.();
+  }, [
+    isOpen,
+    selectedAgentIds.length,
+    defaultAgentProviderId,
+    setSelectedAgentIds,
+    setAvailableProviders,
+  ]);
 
   // Reset state when opened/closed
   useEffect(() => {

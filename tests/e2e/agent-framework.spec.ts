@@ -1,6 +1,8 @@
 import { test, expect, Page, ElectronApplication } from "@playwright/test";
 import { launchElectronApp } from "./launch-helpers";
 
+test.setTimeout(120_000);
+
 test.describe("Agent Framework", () => {
   test.describe.configure({ mode: 'serial' });
   let electronApp: ElectronApplication;
@@ -116,6 +118,38 @@ test.describe("Agent Framework", () => {
     } else {
       await page.keyboard.press("Escape");
     }
+  });
+
+  test("Cmd+J defaults to configured built-in provider after switching to OpenAI", async () => {
+    await page.keyboard.press("Meta+,");
+    await expect(page.locator("h1:has-text('Settings')")).toBeVisible({ timeout: 5000 });
+
+    const settingsPanel = page.getByTestId("settings-panel");
+    await expect(settingsPanel.getByRole("heading", { name: "Built-in AI Provider" })).toBeVisible();
+    await settingsPanel.getByRole("button", { name: "OpenAI", exact: true }).click();
+    await settingsPanel.getByRole("button", { name: "Save Changes", exact: true }).click();
+    await expect(settingsPanel.getByRole("button", { name: "Save Changes", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    await page.evaluate(() => {
+      const store = (window as Record<string, unknown>).__ZUSTAND_STORE__ as {
+        getState?: () => { setSelectedAgentIds?: (ids: string[]) => void };
+      };
+      store.getState?.().setSelectedAgentIds?.([]);
+    });
+
+    await page.keyboard.press("Meta+j");
+    await page.waitForTimeout(500);
+
+    const selectedProvider = await page.evaluate(() => {
+      const store = (window as Record<string, unknown>).__ZUSTAND_STORE__ as {
+        getState?: () => { selectedAgentIds?: string[] };
+      };
+      return store.getState?.().selectedAgentIds?.[0] ?? null;
+    });
+    expect(selectedProvider).toBe("openai");
+
+    await page.keyboard.press("Escape");
   });
 
   test("agent palette filtering works", async () => {

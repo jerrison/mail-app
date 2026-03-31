@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
-import type { IpcResponse } from "../../shared/types";
+import { DEFAULT_LLM_CONFIG, type IpcResponse, type Config, type LlmConfig, type BuiltInLlmProviderId } from "../../shared/types";
 import { reconfigurePostHog } from "../services/posthog";
+import { useAppStore } from "../store";
 
 interface SetupWizardProps {
   onComplete: () => void;
@@ -15,7 +16,55 @@ interface ExtensionAuthInfo {
   authType: "extension" | "agent";
 }
 
+interface SetupAuthState {
+  hasCredentials: boolean;
+  hasTokens: boolean;
+  defaultProvider: BuiltInLlmProviderId;
+  hasDefaultBuiltInProviderAuth: boolean;
+  configuredProviders: BuiltInLlmProviderId[];
+}
+
+const BUILT_IN_PROVIDER_META: Record<
+  BuiltInLlmProviderId,
+  { label: string; keyLabel: string; keyPlaceholder: string; helperUrl: string }
+> = {
+  anthropic: {
+    label: "Anthropic",
+    keyLabel: "Anthropic API Key",
+    keyPlaceholder: "sk-ant-...",
+    helperUrl: "https://console.anthropic.com/settings/keys",
+  },
+  openai: {
+    label: "OpenAI",
+    keyLabel: "OpenAI API Key",
+    keyPlaceholder: "sk-proj-...",
+    helperUrl: "https://platform.openai.com/api-keys",
+  },
+};
+
+function normalizeWizardLlmConfig(config?: Config["llm"]): LlmConfig {
+  return {
+    ...DEFAULT_LLM_CONFIG,
+    ...config,
+    providers: {
+      anthropic: {
+        ...DEFAULT_LLM_CONFIG.providers.anthropic,
+        ...config?.providers?.anthropic,
+      },
+      openai: {
+        ...DEFAULT_LLM_CONFIG.providers.openai,
+        ...config?.providers?.openai,
+      },
+    },
+    featureTiers: {
+      ...DEFAULT_LLM_CONFIG.featureTiers,
+      ...config?.featureTiers,
+    },
+  };
+}
+
 export function SetupWizard({ onComplete }: SetupWizardProps) {
+  const setDefaultAgentProviderId = useAppStore((state) => state.setDefaultAgentProviderId);
   const [step, setStep] = useState<Step>("loading");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -29,6 +78,9 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
 
   // API key input
   const [apiKey, setApiKey] = useState("");
+  const [selectedProvider, setSelectedProvider] = useState<BuiltInLlmProviderId>("anthropic");
+  const [configuredProviders, setConfiguredProviders] = useState<BuiltInLlmProviderId[]>([]);
+  const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
 
   // Extension auth state
   const [extensionAuths, setExtensionAuths] = useState<ExtensionAuthInfo[]>([]);
@@ -37,39 +89,89 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
   // Analytics opt-in (default ON — session replay is bundled under analytics)
   const [analyticsEnabled, setAnalyticsEnabled] = useState(true);
 
+  const enterExtensionsStep = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const result = await window.api.extensions.getPendingAuths() as IpcResponse<ExtensionAuthInfo[]>;
+      if (result.success && result.data.length > 0 && result.data.some((ext) => ext.needsAuth)) {
+        setExtensionAuths(result.data.filter((ext) => ext.needsAuth));
+        setStep("extensions");
+        setIsLoading(false);
+      } else {
+        if (!result.success) {
+          console.error("[SetupWizard] getPendingAuths failed:", result.error);
+        }
+        setVisibleSteps((prev) => prev.filter((s) => s !== "extensions"));
+        setIsLoading(false);
+        setStep("analytics");
+      }
+    } catch (err) {
+      console.error("[SetupWizard] getPendingAuths failed:", err);
+      setVisibleSteps((prev) => prev.filter((s) => s !== "extensions"));
+      setIsLoading(false);
+      setStep("analytics");
+    }
+  }, []);
+
   // Check what's already configured and skip to the right step.
   useEffect(() => {
-    (window.api.gmail.checkAuth() as Promise<IpcResponse<{ hasCredentials: boolean; hasTokens: boolean; hasAnthropicKey: boolean }>>)
-    .then((authResult) => {
-      if (authResult.success) {
-        const { hasCredentials, hasAnthropicKey, hasTokens } = authResult.data;
+    let cancelled = false;
+
+    Promise.all([
+      window.api.gmail.checkAuth() as Promise<IpcResponse<SetupAuthState>>,
+      window.api.settings.get() as Promise<IpcResponse<Config>>,
+    ])
+      .then(([authResult, settingsResult]) => {
+        if (cancelled) return;
+
+        const fallbackAuth: SetupAuthState = {
+          hasCredentials: false,
+          hasTokens: false,
+          defaultProvider: "anthropic",
+          hasDefaultBuiltInProviderAuth: false,
+          configuredProviders: [],
+        };
+        const authState = authResult.success ? authResult.data : fallbackAuth;
+        const nextLlmConfig = settingsResult.success
+          ? normalizeWizardLlmConfig(settingsResult.data.llm)
+          : DEFAULT_LLM_CONFIG;
+
+        setConfiguredProviders(authState.configuredProviders);
+        setLlmConfig({
+          ...nextLlmConfig,
+          defaultProvider: authState.defaultProvider,
+        });
+        setSelectedProvider(authState.defaultProvider);
+        setDefaultAgentProviderId(authState.defaultProvider === "openai" ? "openai" : "claude");
 
         const flow: Step[] = [];
-        if (!hasCredentials) flow.push("credentials");
-        if (!hasAnthropicKey) flow.push("apikey");
-        if (!hasTokens) flow.push("oauth");
+        if (!authState.hasCredentials) flow.push("credentials");
+        if (!authState.hasDefaultBuiltInProviderAuth) flow.push("apikey");
+        if (!authState.hasTokens) flow.push("oauth");
         flow.push("extensions");
         flow.push("analytics");
         setVisibleSteps(flow);
 
-        if (!hasCredentials) {
+        if (!authState.hasCredentials) {
           setStep("credentials");
-        } else if (!hasAnthropicKey) {
+        } else if (!authState.hasDefaultBuiltInProviderAuth) {
           setStep("apikey");
-        } else if (!hasTokens) {
+        } else if (!authState.hasTokens) {
           setStep("oauth");
         } else {
-          enterExtensionsStep();
+          void enterExtensionsStep();
         }
-      } else {
+      })
+      .catch(() => {
+        if (cancelled) return;
         setVisibleSteps(["credentials", "apikey", "oauth", "extensions", "analytics"]);
         setStep("credentials");
-      }
-    }).catch(() => {
-      setVisibleSteps(["credentials", "apikey", "oauth", "extensions", "analytics"]);
-      setStep("credentials");
-    });
-  }, []);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enterExtensionsStep, setDefaultAgentProviderId]);
 
   const handleSaveCredentials = async () => {
     if (!googleClientId.trim() || !googleClientSecret.trim()) {
@@ -99,8 +201,11 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
   };
 
   const handleSaveApiKey = async () => {
-    if (!apiKey.trim()) {
-      setError("Please enter your Anthropic API key");
+    const trimmedApiKey = apiKey.trim();
+    const existingProviderApiKey = llmConfig.providers[selectedProvider].apiKey?.trim() || "";
+
+    if (!trimmedApiKey && !existingProviderApiKey) {
+      setError(`Please enter your ${BUILT_IN_PROVIDER_META[selectedProvider].keyLabel}`);
       return;
     }
 
@@ -108,17 +213,44 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
     setError(null);
 
     try {
-      // Validate the key with a real API call before saving
-      const validation = await window.api.settings.validateApiKey(apiKey.trim()) as IpcResponse<void>;
-      if (!validation.success) {
-        setError(validation.error ?? "Invalid API key");
-        return;
+      if (trimmedApiKey && trimmedApiKey !== existingProviderApiKey) {
+        const validation = await window.api.settings.validateProviderApiKey(selectedProvider, trimmedApiKey) as IpcResponse<void>;
+        if (!validation.success) {
+          setError(validation.error ?? "Invalid API key");
+          return;
+        }
       }
 
-      const result = await window.api.settings.set({ anthropicApiKey: apiKey.trim() }) as IpcResponse<void>;
+      const nextLlmConfig: LlmConfig = {
+        ...llmConfig,
+        defaultProvider: selectedProvider,
+        providers: {
+          ...llmConfig.providers,
+          [selectedProvider]: {
+            ...llmConfig.providers[selectedProvider],
+            apiKey: trimmedApiKey || existingProviderApiKey || undefined,
+          },
+        },
+      };
+
+      const result = await window.api.settings.set({
+        llm: {
+          ...nextLlmConfig,
+          defaultProvider: selectedProvider,
+        },
+        anthropicApiKey: nextLlmConfig.providers.anthropic.apiKey?.trim() || undefined,
+      }) as IpcResponse<void>;
       if (result.success) {
-        const authResult = await window.api.gmail.checkAuth() as IpcResponse<{ hasCredentials: boolean; hasTokens: boolean; hasAnthropicKey: boolean }>;
+        setLlmConfig(nextLlmConfig);
+        setConfiguredProviders((prev) =>
+          prev.includes(selectedProvider) ? prev : [...prev, selectedProvider]
+        );
+        setDefaultAgentProviderId(selectedProvider === "openai" ? "openai" : "claude");
+        window.api.agent.providers?.();
+
+        const authResult = await window.api.gmail.checkAuth() as IpcResponse<SetupAuthState>;
         if (authResult.success && authResult.data.hasTokens) {
+          setConfiguredProviders(authResult.data.configuredProviders);
           await enterExtensionsStep();
         } else {
           setStep("oauth");
@@ -148,31 +280,6 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
       setIsLoading(false);
     }
   };
-
-  const enterExtensionsStep = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const result = await window.api.extensions.getPendingAuths() as IpcResponse<ExtensionAuthInfo[]>;
-      if (result.success && result.data.length > 0 && result.data.some((ext) => ext.needsAuth)) {
-        setExtensionAuths(result.data.filter((ext) => ext.needsAuth));
-        setStep("extensions");
-        setIsLoading(false);
-      } else {
-        // No extensions need auth (or IPC failed) — skip extensions step entirely
-        if (!result.success) {
-          console.error("[SetupWizard] getPendingAuths failed:", result.error);
-        }
-        setVisibleSteps((prev) => prev.filter((s) => s !== "extensions"));
-        setIsLoading(false);
-        setStep("analytics");
-      }
-    } catch (err) {
-      console.error("[SetupWizard] getPendingAuths failed:", err);
-      setVisibleSteps((prev) => prev.filter((s) => s !== "extensions"));
-      setIsLoading(false);
-      setStep("analytics");
-    }
-  }, []);
 
   const handleExtensionAuth = async (extensionId: string, authType: "extension" | "agent") => {
     setAuthenticatingExtension(extensionId);
@@ -309,46 +416,74 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
           {step === "apikey" && (
             <>
               <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4">
-                Anthropic API Key
+                Built-in AI Provider
               </h2>
               <p className="text-gray-600 dark:text-gray-400 mb-6">
-                Exo uses Claude to analyze your emails, generate drafts, and look up sender information.
-                You'll need an Anthropic API key to enable these features.
+                Choose which provider powers Exo’s built-in AI features. Memories, prompts, and learned behavior stay shared when you switch.
               </p>
 
+              <div className="flex flex-wrap gap-2 mb-6">
+                {(Object.keys(BUILT_IN_PROVIDER_META) as BuiltInLlmProviderId[]).map((provider) => (
+                  <button
+                    key={provider}
+                    onClick={() => {
+                      setSelectedProvider(provider);
+                      setApiKey("");
+                      setError(null);
+                    }}
+                    data-active={selectedProvider === provider ? "true" : undefined}
+                    className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                      selectedProvider === provider
+                        ? "bg-blue-600 dark:bg-blue-500 text-white"
+                        : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+                    }`}
+                  >
+                    {BUILT_IN_PROVIDER_META[provider].label}
+                  </button>
+                ))}
+              </div>
+
               <div className="bg-blue-50 dark:bg-blue-900/30 p-4 rounded-lg mb-6">
-                <h3 className="font-semibold text-blue-900 dark:text-blue-200 mb-2">Get your API key:</h3>
+                <h3 className="font-semibold text-blue-900 dark:text-blue-200 mb-2">
+                  {BUILT_IN_PROVIDER_META[selectedProvider].label} setup
+                </h3>
                 <ol className="text-sm text-blue-800 dark:text-blue-300 space-y-2 list-decimal list-inside">
                   <li>
                     Go to{" "}
                     <a
-                      href="https://console.anthropic.com/settings/keys"
+                      href={BUILT_IN_PROVIDER_META[selectedProvider].helperUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="underline hover:no-underline"
                     >
-                      console.anthropic.com
+                      {BUILT_IN_PROVIDER_META[selectedProvider].helperUrl.replace(/^https?:\/\//, "")}
                     </a>
                   </li>
                   <li>Create a new API key (or use an existing one)</li>
-                  <li>Paste it below</li>
+                  <li>Paste it below, or keep the saved key and continue</li>
                 </ol>
               </div>
 
               <div className="space-y-4 mb-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    API Key
+                    {BUILT_IN_PROVIDER_META[selectedProvider].keyLabel}
                   </label>
                   <input
                     type="password"
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && !isLoading && handleSaveApiKey()}
-                    placeholder="sk-ant-api03-..."
+                    placeholder={BUILT_IN_PROVIDER_META[selectedProvider].keyPlaceholder}
                     className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
+
+                {configuredProviders.includes(selectedProvider) && !apiKey.trim() && (
+                  <div className="rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 px-4 py-3 text-sm text-green-800 dark:text-green-300">
+                    A saved {BUILT_IN_PROVIDER_META[selectedProvider].label} key is already available. Continue to make it the default provider.
+                  </div>
+                )}
               </div>
 
               {error && (

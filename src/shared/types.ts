@@ -393,6 +393,15 @@ export const LlmConfigSchema = z.object({
 
 export type LlmConfig = z.infer<typeof LlmConfigSchema>;
 
+export const DEFAULT_LLM_CONFIG: LlmConfig = {
+  defaultProvider: "anthropic",
+  providers: {
+    anthropic: {},
+    openai: {},
+  },
+  featureTiers: DEFAULT_FEATURE_QUALITY_CONFIG,
+};
+
 /** Resolve a model tier to its concrete model ID string. */
 export function resolveModelId(tier: ModelTier): string {
   return MODEL_TIER_IDS[tier];

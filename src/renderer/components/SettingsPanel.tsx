@@ -1,7 +1,25 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import DOMPurify from "dompurify";
-import { DEFAULT_ANALYSIS_PROMPT, DEFAULT_DRAFT_PROMPT, DEFAULT_ARCHIVE_READY_PROMPT, DEFAULT_STYLE_PROMPT, DEFAULT_AGENT_DRAFTER_PROMPT, DEFAULT_MODEL_CONFIG, MODEL_TIERS, MODEL_TIER_LABELS, type EAConfig, type Config, type InboxDensity, type Signature, type McpServerConfig, type ModelConfig, type ModelTier } from "../../shared/types";
+import {
+  DEFAULT_ANALYSIS_PROMPT,
+  DEFAULT_DRAFT_PROMPT,
+  DEFAULT_ARCHIVE_READY_PROMPT,
+  DEFAULT_STYLE_PROMPT,
+  DEFAULT_AGENT_DRAFTER_PROMPT,
+  DEFAULT_LLM_CONFIG,
+  BUILT_IN_LLM_PROVIDERS,
+  FEATURE_QUALITIES,
+  type EAConfig,
+  type Config,
+  type InboxDensity,
+  type Signature,
+  type McpServerConfig,
+  type LlmConfig,
+  type BuiltInLlmProviderId,
+  type FeatureQuality,
+  type FeatureQualityConfig,
+} from "../../shared/types";
 import { useAppStore, type Account, type PrefetchProgress, type SettingsTab } from "../store";
 import { reconfigurePostHog, trackEvent } from "../services/posthog";
 import { SplitConfigEditor } from "./SplitConfigEditor";
@@ -13,12 +31,93 @@ interface SettingsPanelProps {
   initialTab?: SettingsTab;
 }
 
+const BUILT_IN_PROVIDER_META: Record<
+  BuiltInLlmProviderId,
+  { label: string; keyLabel: string; keyPlaceholder: string; description: string }
+> = {
+  anthropic: {
+    label: "Anthropic",
+    keyLabel: "Anthropic API Key",
+    keyPlaceholder: "sk-ant-...",
+    description: "Claude models for built-in drafting, triage, and agent flows.",
+  },
+  openai: {
+    label: "OpenAI",
+    keyLabel: "OpenAI API Key",
+    keyPlaceholder: "sk-proj-...",
+    description: "GPT models for built-in drafting, triage, and agent flows.",
+  },
+};
+
+const FEATURE_QUALITY_LABELS: Record<FeatureQuality, string> = {
+  fast: "Fast",
+  balanced: "Balanced",
+  best: "Best",
+};
+
+const FEATURE_ROWS: Array<{
+  key: keyof FeatureQualityConfig;
+  label: string;
+  description: string;
+}> = [
+  { key: "analysis", label: "Email Analysis", description: "Triaging which emails need replies" },
+  { key: "drafts", label: "Draft Generation", description: "Writing reply drafts" },
+  { key: "refinement", label: "Draft Refinement", description: "Improving drafts based on feedback" },
+  { key: "calendaring", label: "Scheduling Detection", description: "Identifying calendar-related emails" },
+  { key: "archiveReady", label: "Archive-Ready Analysis", description: "Detecting completed conversations" },
+  { key: "senderLookup", label: "Sender Lookup", description: "Researching sender context for drafts" },
+  { key: "agentDrafter", label: "Agent Drafter", description: "Background auto-draft generation" },
+  { key: "agentChat", label: "Agent Chat", description: "Interactive agent sidebar conversations" },
+];
+
+function normalizeRendererLlmConfig(config?: Config["llm"]): LlmConfig {
+  return {
+    ...DEFAULT_LLM_CONFIG,
+    ...config,
+    providers: {
+      anthropic: {
+        ...DEFAULT_LLM_CONFIG.providers.anthropic,
+        ...config?.providers?.anthropic,
+      },
+      openai: {
+        ...DEFAULT_LLM_CONFIG.providers.openai,
+        ...config?.providers?.openai,
+      },
+    },
+    featureTiers: {
+      ...DEFAULT_LLM_CONFIG.featureTiers,
+      ...config?.featureTiers,
+    },
+  };
+}
+
+function toDefaultAgentProviderId(provider: BuiltInLlmProviderId): "claude" | "openai" {
+  return provider === "openai" ? "openai" : "claude";
+}
+
 export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? "general");
 
   // Account management state
-  const { accounts, setAccounts, removeAccount: removeAccountFromStore, prefetchProgress, themePreference, setThemePreference, setResolvedTheme, inboxDensity, setInboxDensity, keyboardBindings, setKeyboardBindings, undoSendDelaySeconds, setUndoSendDelay, currentAccountId, highlightMemoryIds } = useAppStore();
+  const {
+    accounts,
+    setAccounts,
+    removeAccount: removeAccountFromStore,
+    prefetchProgress,
+    themePreference,
+    setThemePreference,
+    setResolvedTheme,
+    inboxDensity,
+    setInboxDensity,
+    keyboardBindings,
+    setKeyboardBindings,
+    undoSendDelaySeconds,
+    setUndoSendDelay,
+    currentAccountId,
+    highlightMemoryIds,
+    setDefaultAgentProviderId,
+  } = useAppStore();
   const [isAddingAccount, setIsAddingAccount] = useState(false);
   const [addAccountPhase, setAddAccountPhase] = useState("Connecting...");
   const [accountError, setAccountError] = useState<string | null>(null);
@@ -39,8 +138,9 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
 
   // General settings state
   const [enableSenderLookup, setEnableSenderLookup] = useState(true);
-  const [modelConfig, setModelConfig] = useState<ModelConfig>(DEFAULT_MODEL_CONFIG);
+  const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
   const [isSavingGeneral, setIsSavingGeneral] = useState(false);
+  const [generalSaveError, setGeneralSaveError] = useState<string | null>(null);
   const [isDefaultMailApp, setIsDefaultMailApp] = useState(false);
   const [isDefaultMailAppLoading, setIsDefaultMailAppLoading] = useState(false);
   const [defaultMailAppError, setDefaultMailAppError] = useState("");
@@ -68,9 +168,6 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
   const [eaError, setEaError] = useState<string | null>(null);
 
   // Agent authentication state
-  const [anthropicApiKey, setAnthropicApiKey] = useState("");
-  const [isSavingApiKey, setIsSavingApiKey] = useState(false);
-  const [apiKeySaved, setApiKeySaved] = useState(false);
   const [claudeCliAvailable, setClaudeCliAvailable] = useState(false);
   const [claudeAuthStatus, setClaudeAuthStatus] = useState<"checking" | "authenticated" | "not_authenticated">("checking");
   const [claudeAuthEmail, setClaudeAuthEmail] = useState<string | undefined>();
@@ -165,10 +262,9 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
   useEffect(() => {
     if (generalConfig) {
       setEnableSenderLookup(generalConfig.enableSenderLookup ?? true);
-      setModelConfig({ ...DEFAULT_MODEL_CONFIG, ...generalConfig.modelConfig });
+      setLlmConfig(normalizeRendererLlmConfig(generalConfig.llm));
       setGithubToken(generalConfig.githubToken ?? "");
       setAllowPrereleaseUpdates(generalConfig.allowPrereleaseUpdates ?? false);
-      setAnthropicApiKey(generalConfig.anthropicApiKey ?? "");
       const browser = generalConfig.agentBrowser;
       if (browser) {
         setBrowserEnabled(browser.enabled);
@@ -291,13 +387,44 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
 
   const handleSaveGeneral = async () => {
     setIsSavingGeneral(true);
+    setGeneralSaveError(null);
     try {
+      const trimmedAnthropicApiKey = llmConfig.providers.anthropic.apiKey?.trim() || undefined;
+      const trimmedOpenAiApiKey = llmConfig.providers.openai.apiKey?.trim() || undefined;
+      const normalizedLlm: LlmConfig = {
+        ...llmConfig,
+        providers: {
+          anthropic: {
+            apiKey: trimmedAnthropicApiKey,
+          },
+          openai: {
+            apiKey: trimmedOpenAiApiKey,
+          },
+        },
+      };
+
+      const previousLlm = normalizeRendererLlmConfig(generalConfig?.llm);
+      for (const provider of BUILT_IN_LLM_PROVIDERS) {
+        const nextApiKey = normalizedLlm.providers[provider].apiKey;
+        const previousApiKey = previousLlm.providers[provider].apiKey?.trim() || undefined;
+        if (!nextApiKey || nextApiKey === previousApiKey) continue;
+
+        const validation = await window.api.settings.validateProviderApiKey(provider, nextApiKey) as { success: boolean; error?: string };
+        if (!validation.success) {
+          setGeneralSaveError(validation.error ?? `Invalid ${BUILT_IN_PROVIDER_META[provider].keyLabel.toLowerCase()}.`);
+          return;
+        }
+      }
+
       await window.api.settings.set({
         enableSenderLookup,
-        modelConfig,
+        llm: normalizedLlm,
+        anthropicApiKey: trimmedAnthropicApiKey,
         githubToken: githubToken || undefined,
         allowPrereleaseUpdates,
       });
+      setDefaultAgentProviderId(toDefaultAgentProviderId(normalizedLlm.defaultProvider));
+      window.api.agent.providers?.();
       queryClient.invalidateQueries({ queryKey: ["general-config"] });
     } finally {
       setIsSavingGeneral(false);
@@ -449,20 +576,6 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
     await handleSaveSignatures(updated);
     if (editingSignature?.id === id) {
       setEditingSignature(null);
-    }
-  };
-
-  // Agent authentication handlers
-  const handleSaveApiKey = async () => {
-    setIsSavingApiKey(true);
-    setApiKeySaved(false);
-    try {
-      await window.api.settings.set({ anthropicApiKey: anthropicApiKey || undefined });
-      queryClient.invalidateQueries({ queryKey: ["general-config"] });
-      setApiKeySaved(true);
-      setTimeout(() => setApiKeySaved(false), 3000);
-    } finally {
-      setIsSavingApiKey(false);
     }
   };
 
@@ -745,7 +858,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
             <div>
               <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">General Settings</h2>
               <p className="text-gray-600 dark:text-gray-400 mb-4">
-                Configure how Exo generates draft replies.
+                Configure appearance, built-in AI providers, and drafting behavior.
               </p>
 
               {/* Appearance / Theme Toggle */}
@@ -945,42 +1058,127 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                 )}
               </div>
 
-              {/* AI Models */}
+              {/* Built-in Provider */}
               <div className="bg-white dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-600 mb-6">
                 <div className="mb-3">
-                  <h3 className="font-semibold text-gray-900 dark:text-gray-100">AI Models</h3>
+                  <h3 className="font-semibold text-gray-900 dark:text-gray-100">Built-in AI Provider</h3>
                   <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                    Choose which Claude model to use for each feature. Haiku is fastest and cheapest, Opus is most capable.
+                    Choose which built-in provider powers Exo. Memories, prompts, and learned behavior stay shared when you switch.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {BUILT_IN_LLM_PROVIDERS.map((provider) => (
+                    <button
+                      key={provider}
+                      onClick={() => {
+                        setGeneralSaveError(null);
+                        setLlmConfig((prev) => ({ ...prev, defaultProvider: provider }));
+                      }}
+                      data-active={llmConfig.defaultProvider === provider ? "true" : undefined}
+                      className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                        llmConfig.defaultProvider === provider
+                          ? "bg-blue-600 dark:bg-blue-500 text-white"
+                          : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+                      }`}
+                    >
+                      {BUILT_IN_PROVIDER_META[provider].label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  {BUILT_IN_LLM_PROVIDERS.map((provider) => (
+                    <div
+                      key={provider}
+                      className={`rounded-lg border p-4 ${
+                        llmConfig.defaultProvider === provider
+                          ? "border-blue-300 dark:border-blue-500 bg-blue-50 dark:bg-blue-900/20"
+                          : "border-gray-200 dark:border-gray-700"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div>
+                          <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                            {BUILT_IN_PROVIDER_META[provider].label}
+                          </h4>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            {BUILT_IN_PROVIDER_META[provider].description}
+                          </p>
+                        </div>
+                        {llmConfig.defaultProvider === provider && (
+                          <span className="inline-flex items-center rounded-full bg-blue-100 dark:bg-blue-900/60 px-2 py-0.5 text-xs font-medium text-blue-800 dark:text-blue-300">
+                            Default
+                          </span>
+                        )}
+                      </div>
+
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        {BUILT_IN_PROVIDER_META[provider].keyLabel}
+                      </label>
+                      <input
+                        type="password"
+                        value={llmConfig.providers[provider].apiKey ?? ""}
+                        onChange={(e) => {
+                          setGeneralSaveError(null);
+                          setLlmConfig((prev) => ({
+                            ...prev,
+                            providers: {
+                              ...prev.providers,
+                              [provider]: {
+                                ...prev.providers[provider],
+                                apiKey: e.target.value,
+                              },
+                            },
+                          }));
+                        }}
+                        placeholder={BUILT_IN_PROVIDER_META[provider].keyPlaceholder}
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-500 rounded-lg text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      />
+                      {llmConfig.defaultProvider === provider && !llmConfig.providers[provider].apiKey?.trim() && (
+                        <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                          Add a key before using this provider outside demo mode.
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* AI Quality */}
+              <div className="bg-white dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-600 mb-6">
+                <div className="mb-3">
+                  <h3 className="font-semibold text-gray-900 dark:text-gray-100">AI Quality</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                    Tune the quality level for each feature. Faster settings lower cost and latency; best uses the strongest model for the selected provider.
                   </p>
                 </div>
                 <div className="space-y-3">
-                  {([
-                    { key: "analysis" as const, label: "Email Analysis", description: "Triaging which emails need replies" },
-                    { key: "drafts" as const, label: "Draft Generation", description: "Writing reply drafts" },
-                    { key: "refinement" as const, label: "Draft Refinement", description: "Improving drafts based on feedback" },
-                    { key: "calendaring" as const, label: "Scheduling Detection", description: "Identifying calendar-related emails" },
-                    { key: "archiveReady" as const, label: "Archive-Ready Analysis", description: "Detecting completed conversations" },
-                    { key: "senderLookup" as const, label: "Sender Lookup", description: "Web search for sender info" },
-                    { key: "agentDrafter" as const, label: "Agent Drafter", description: "Background auto-draft generation" },
-                    { key: "agentChat" as const, label: "Agent Chat", description: "Interactive agent sidebar conversations" },
-                  ]).map(({ key, label, description }) => (
+                  {FEATURE_ROWS.map(({ key, label, description }) => (
                     <div key={key} className="flex items-center justify-between py-2 border-b border-gray-100 dark:border-gray-700 last:border-0">
                       <div className="flex-1 min-w-0 mr-4">
                         <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{label}</p>
                         <p className="text-xs text-gray-500 dark:text-gray-400">{description}</p>
                       </div>
                       <select
-                        value={modelConfig[key]}
+                        value={llmConfig.featureTiers[key]}
                         onChange={(e) => {
-                          const tier = e.target.value;
-                          if ((MODEL_TIERS as readonly string[]).includes(tier)) {
-                            setModelConfig(prev => ({ ...prev, [key]: tier as ModelTier }));
+                          const quality = e.target.value;
+                          if ((FEATURE_QUALITIES as readonly string[]).includes(quality)) {
+                            setLlmConfig((prev) => ({
+                              ...prev,
+                              featureTiers: {
+                                ...prev.featureTiers,
+                                [key]: quality as FeatureQuality,
+                              },
+                            }));
                           }
                         }}
                         className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-500 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       >
-                        {MODEL_TIERS.map(tier => (
-                          <option key={tier} value={tier}>{MODEL_TIER_LABELS[tier]}</option>
+                        {FEATURE_QUALITIES.map((quality) => (
+                          <option key={quality} value={quality}>
+                            {FEATURE_QUALITY_LABELS[quality]}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -1136,13 +1334,19 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                   <div className="bg-blue-50 dark:bg-blue-900/30 p-3 rounded-lg text-sm text-blue-800 dark:text-blue-300">
                     <p className="font-medium mb-1">How it works:</p>
                     <ul className="list-disc list-inside space-y-1">
-                      <li>Uses Claude's web search to find information about the sender</li>
+                      <li>Uses the selected built-in provider to research the sender</li>
                       <li>Results are cached for the session to avoid repeated lookups</li>
                       <li>Includes professional background and context in the draft prompt</li>
                     </ul>
                   </div>
                 )}
               </div>
+
+              {generalSaveError && (
+                <div className="mb-4 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-800 dark:text-red-300">
+                  {generalSaveError}
+                </div>
+              )}
 
               {/* Save button */}
               <div className="flex justify-end">
@@ -2002,34 +2206,13 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                 Authentication
               </h4>
 
-              {/* Anthropic API Key */}
-              <div className="mb-6">
+              <div className="mb-6 rounded-lg bg-gray-50 dark:bg-gray-700/40 p-4">
                 <h5 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Anthropic API Key
+                  Built-in Provider Keys
                 </h5>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-                  Required for email analysis, draft generation, and sender lookup.
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Anthropic and OpenAI API keys are managed in General Settings. Switching providers there keeps the same memories, prompts, and learned behavior.
                 </p>
-                <div className="flex gap-2">
-                  <input
-                    type="password"
-                    value={anthropicApiKey}
-                    onChange={(e) => setAnthropicApiKey(e.target.value)}
-                    placeholder="sk-ant-..."
-                    className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-400"
-                  />
-                  <button
-                    onClick={handleSaveApiKey}
-                    disabled={isSavingApiKey}
-                    className={`px-4 py-2 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors ${
-                      apiKeySaved
-                        ? "bg-green-600 dark:bg-green-500"
-                        : "bg-blue-600 dark:bg-blue-500 hover:bg-blue-700 dark:hover:bg-blue-600"
-                    }`}
-                  >
-                    {isSavingApiKey ? "Saving..." : apiKeySaved ? "Saved" : "Save"}
-                  </button>
-                </div>
               </div>
 
               {/* Claude Account (OAuth) — only shown when claude CLI is available */}
@@ -2084,8 +2267,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
                   )}
 
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
-                    An API key above also enables the agent.
-                    Claude Account login is only needed if you don't have an API key.
+                    Claude Account login is optional. Use it if you want the Claude agent available through your local Claude Code session in addition to API-key based providers.
                   </p>
                 </div>
               )}

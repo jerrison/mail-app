@@ -274,6 +274,7 @@ interface AppState {
   isAgentsSidebarOpen: boolean;
   selectedAgentIds: string[];
   defaultAgentIds: string[];
+  defaultAgentProviderId: string | null;
   availableProviders: AgentProviderConfig[];
   agentTasks: Record<string, AgentTaskInfo>;  // keyed by emailId (or "__global__" for non-email tasks)
   agentTaskIdMap: Record<string, string>;     // taskId -> emailId (or "__global__")
@@ -440,6 +441,7 @@ interface AppState {
   toggleAgentsSidebar: () => void;
   setSelectedAgentIds: (ids: string[]) => void;
   setDefaultAgentIds: (ids: string[]) => void;
+  setDefaultAgentProviderId: (providerId: string | null) => void;
   setAvailableProviders: (providers: AgentProviderConfig[]) => void;
   startAgentTask: (taskId: string, emailId: string, providerIds: string[], prompt: string, context: AgentContext) => void;
   followUpAgentTask: (emailId: string, prompt: string) => void;
@@ -592,6 +594,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isAgentsSidebarOpen: false,
   selectedAgentIds: [],
   defaultAgentIds: [],
+  defaultAgentProviderId: "claude",
   availableProviders: [],
   agentTasks: {},
   agentTaskIdMap: {},
@@ -1177,6 +1180,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   toggleAgentsSidebar: () => set((state) => ({ isAgentsSidebarOpen: !state.isAgentsSidebarOpen })),
   setSelectedAgentIds: (ids) => set({ selectedAgentIds: ids }),
   setDefaultAgentIds: (ids) => set({ defaultAgentIds: ids }),
+  setDefaultAgentProviderId: (providerId) => set({ defaultAgentProviderId: providerId }),
   setAvailableProviders: (providers) => set({ availableProviders: providers }),
 
   startAgentTask: (taskId, emailId, providerIds, prompt, context) => {

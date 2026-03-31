@@ -302,11 +302,12 @@ export function registerExtensionsIpc(): void {
         // Trigger config update to worker so provider picks up new settings
         const { agentCoordinator } = await import("../agents/agent-coordinator");
         const { populatePrivateProviderConfig } = await import("../agents/private-providers-main");
-        const { getConfig, getModelIdForFeature } = await import("./settings.ipc");
-        const appConfig = getConfig();
+        const { getLlmConfig, getModelIdForFeature } = await import("./settings.ipc");
+        const llm = getLlmConfig();
         const baseConfig = {
           model: getModelIdForFeature("agentDrafter"),
-          anthropicApiKey: appConfig.anthropicApiKey || process.env.ANTHROPIC_API_KEY || undefined,
+          anthropicApiKey: llm.providers.anthropic.apiKey || process.env.ANTHROPIC_API_KEY || undefined,
+          openaiApiKey: llm.providers.openai.apiKey || process.env.OPENAI_API_KEY || undefined,
         };
         const enrichedConfig = await populatePrivateProviderConfig(baseConfig);
         agentCoordinator.updateConfig(enrichedConfig);

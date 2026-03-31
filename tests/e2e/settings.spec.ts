@@ -1,6 +1,9 @@
 import { test, expect, Page, ElectronApplication } from "@playwright/test";
 import { launchElectronApp } from "./launch-helpers";
 
+test.describe.configure({ mode: "serial" });
+test.setTimeout(120_000);
+
 /**
  * E2E Tests for the Settings panel.
  *
@@ -314,6 +317,44 @@ test.describe("Settings Panel - Undo Send Delay", () => {
     await page.waitForTimeout(300);
 
     await expect(thirtySecButton).toHaveAttribute("data-active", "true");
+  });
+});
+
+test.describe("Settings Panel - Built-in Provider", () => {
+  test.describe.configure({ mode: "serial" });
+  let electronApp: ElectronApplication;
+  let page: Page;
+
+  test.beforeAll(async ({}, testInfo) => {
+    const result = await launchElectronApp({ workerIndex: testInfo.workerIndex });
+    electronApp = result.app;
+    page = result.page;
+  });
+
+  test.afterAll(async () => {
+    if (electronApp) await electronApp.close();
+  });
+
+  test("can switch built-in provider between Anthropic and OpenAI and show OpenAI key field", async () => {
+    const settingsButton = page.locator("button[title='Settings']");
+    await settingsButton.click();
+    await expect(page.locator("h1:has-text('Settings')")).toBeVisible({ timeout: 5000 });
+
+    const settingsPanel = page.getByTestId("settings-panel");
+    await expect(settingsPanel.getByRole("heading", { name: "Built-in AI Provider" })).toBeVisible();
+
+    const anthropicButton = settingsPanel.getByRole("button", { name: "Anthropic", exact: true });
+    const openaiButton = settingsPanel.getByRole("button", { name: "OpenAI", exact: true });
+    await expect(anthropicButton).toBeVisible();
+    await expect(openaiButton).toBeVisible();
+
+    await openaiButton.click();
+    await expect(openaiButton).toHaveAttribute("data-active", "true");
+    await expect(settingsPanel.getByText("OpenAI API Key")).toBeVisible();
+    await expect(settingsPanel.getByPlaceholder("sk-proj-...")).toBeVisible();
+
+    await anthropicButton.click();
+    await expect(anthropicButton).toHaveAttribute("data-active", "true");
   });
 });
 

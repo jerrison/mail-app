@@ -25,7 +25,7 @@ import { bufferAddEmails, bufferRemoveEmails, bufferUpdateEmails, cancelPendingF
 import { confirmOptimisticReads } from "./optimistic-reads";
 import { initPostHog, identifyUser, trackEvent, addBreadcrumb, captureException } from "./services/posthog";
 import { LocalDraftSchema } from "../shared/types";
-import type { DashboardEmail, OutboxStats, ThemePreference, InboxDensity, ScheduledMessage, SnoozedEmail, IpcResponse, InboxSplit } from "../shared/types";
+import type { DashboardEmail, OutboxStats, ThemePreference, InboxDensity, ScheduledMessage, SnoozedEmail, IpcResponse, InboxSplit, Config } from "../shared/types";
 import type { ScopedAgentEvent, AgentProviderConfig } from "../shared/agent-types";
 import { mergeAndThreadSearchResults } from "./utils/searchResults";
 import type { EmailThread } from "./store";
@@ -489,6 +489,7 @@ export default function App() {
     setInboxDensity,
     setKeyboardBindings,
     setUndoSendDelay,
+    setDefaultAgentProviderId,
     setSentEmails,
     addSentEmails,
     setSplits,
@@ -519,8 +520,10 @@ export default function App() {
     });
 
     // Fetch persisted inbox density, undo send delay, and PostHog config
-    window.api.settings.get().then((result: { success: boolean; data?: { inboxDensity?: InboxDensity; undoSendDelay?: number; keyboardBindings?: "superhuman" | "gmail"; posthog?: { enabled: boolean; sessionReplay?: boolean } } }) => {
+    window.api.settings.get().then((result: IpcResponse<Config>) => {
       if (result.success && result.data) {
+        const providerId = result.data.llm?.defaultProvider === "openai" ? "openai" : "claude";
+        setDefaultAgentProviderId(providerId);
         if (result.data.inboxDensity) {
           setInboxDensity(result.data.inboxDensity);
         }
@@ -558,7 +561,7 @@ export default function App() {
     return () => {
       window.api.theme.removeAllListeners();
     };
-  }, [setThemePreference, setResolvedTheme, setInboxDensity, setKeyboardBindings, setUndoSendDelay]);
+  }, [setThemePreference, setResolvedTheme, setInboxDensity, setKeyboardBindings, setUndoSendDelay, setDefaultAgentProviderId]);
 
   // Toggle dark class on document.documentElement when resolvedTheme changes
   useEffect(() => {
@@ -852,7 +855,8 @@ export default function App() {
             // Save sidebar tab — startAgentTask unconditionally sets it to "agent",
             // but background auto-drafts shouldn't steal focus from the user
             const prevTab = store.sidebarTab;
-            store.startAgentTask(taskId, emailId, ["claude"], "", {
+            const autoDraftProviderId = event.providerId ?? store.defaultAgentProviderId ?? "claude";
+            store.startAgentTask(taskId, emailId, [autoDraftProviderId], "", {
               accountId: email.accountId || "",
               currentEmailId: emailId,
               currentThreadId: email.threadId,
@@ -1015,10 +1019,15 @@ export default function App() {
 
   // Check auth status on mount
   useEffect(() => {
-    window.api.gmail.checkAuth().then((result: IpcResponse<{ hasCredentials: boolean; hasTokens: boolean; hasAnthropicKey: boolean }>) => {
+    window.api.gmail.checkAuth().then((result: IpcResponse<{
+      hasCredentials: boolean;
+      hasTokens: boolean;
+      hasDefaultBuiltInProviderAuth: boolean;
+    }>) => {
       if (result.success) {
-        // Credentials are always bundled at build time — only check API key and tokens
-        setNeedsSetup(!result.data.hasAnthropicKey || !result.data.hasTokens);
+        // Credentials are always bundled at build time — setup only depends on
+        // the selected built-in provider auth plus Gmail OAuth tokens.
+        setNeedsSetup(!result.data.hasDefaultBuiltInProviderAuth || !result.data.hasTokens);
       } else {
         setNeedsSetup(true);
       }

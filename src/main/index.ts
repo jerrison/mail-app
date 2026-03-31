@@ -47,7 +47,7 @@ import { createWindow, getIconPath } from "./window";
 import { registerGmailIpc } from "./ipc/gmail.ipc";
 import { registerAnalysisIpc } from "./ipc/analysis.ipc";
 import { registerDraftsIpc } from "./ipc/drafts.ipc";
-import { registerSettingsIpc, getConfig } from "./ipc/settings.ipc";
+import { registerSettingsIpc, getConfig, getLlmConfig } from "./ipc/settings.ipc";
 import { registerSyncIpc, getEmailSyncService } from "./ipc/sync.ipc";
 import { registerPrefetchIpc } from "./ipc/prefetch.ipc";
 import { registerExtensionsIpc } from "./ipc/extensions.ipc";
@@ -278,12 +278,19 @@ ipcMain.handle("default-mail-app:get-pending", () => {
 // Initialize database on startup
 initDatabase();
 
-// If no ANTHROPIC_API_KEY in env (e.g. packaged app with no .env), read from stored config
-// so that services using `new Anthropic()` pick it up automatically.
+// If built-in provider API keys are not already in the environment (e.g. packaged app
+// with no .env), read them from stored config so services and agents can start with the
+// user's saved provider settings.
 {
-  const config = getConfig();
-  if (!process.env.ANTHROPIC_API_KEY && config.anthropicApiKey) {
-    process.env.ANTHROPIC_API_KEY = config.anthropicApiKey;
+  const llm = getLlmConfig();
+  const anthropicApiKey = llm.providers.anthropic.apiKey;
+  const openaiApiKey = llm.providers.openai.apiKey;
+
+  if (!process.env.ANTHROPIC_API_KEY && anthropicApiKey) {
+    process.env.ANTHROPIC_API_KEY = anthropicApiKey;
+  }
+  if (!process.env.OPENAI_API_KEY && openaiApiKey) {
+    process.env.OPENAI_API_KEY = openaiApiKey;
   }
 }
 

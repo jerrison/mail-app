@@ -14,6 +14,7 @@ import {
   DEFAULT_STYLE_PROMPT,
   DEFAULT_AGENT_DRAFTER_PROMPT,
   DEFAULT_MODEL_CONFIG,
+  DEFAULT_LLM_CONFIG,
   MODEL_TIER_IDS,
 } from "../../shared/types";
 import { resetAnalyzer } from "./analysis.ipc";
@@ -137,50 +138,108 @@ export function getModelIdForFeature(
   return resolveFeatureModelId(getConfig(), feature, provider);
 }
 
+async function validateAnthropicApiKeyValue(apiKey: string): Promise<IpcResponse<void>> {
+  try {
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+
+    // Resolve model with fallback so config errors don't block validation
+    let model: string;
+    try {
+      model = resolveAnthropicValidationModelId(getConfig());
+    } catch {
+      model = "claude-haiku-4-5-20251001";
+    }
+
+    const client = new Anthropic({ apiKey, timeout: 10_000 });
+    await client.messages.create({
+      model,
+      max_tokens: 1,
+      messages: [{ role: "user", content: "hi" }],
+    });
+    return { success: true, data: undefined };
+  } catch (error) {
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    if (error instanceof Anthropic.AuthenticationError) {
+      return { success: false, error: "Invalid API key. Please check and try again." };
+    }
+    if (
+      error instanceof Anthropic.RateLimitError ||
+      error instanceof Anthropic.PermissionDeniedError ||
+      (error instanceof Anthropic.APIError && error.status === 529)
+    ) {
+      return { success: true, data: undefined };
+    }
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    return { success: false, error: `API key validation failed: ${msg}` };
+  }
+}
+
+async function validateOpenAiApiKeyValue(apiKey: string): Promise<IpcResponse<void>> {
+  try {
+    const OpenAI = (await import("openai")).default;
+    const client = new OpenAI({ apiKey, timeout: 10_000 });
+    await client.responses.create({
+      model: "gpt-5-mini",
+      input: "hi",
+      max_output_tokens: 1,
+    });
+    return { success: true, data: undefined };
+  } catch (error) {
+    const {
+      AuthenticationError,
+      PermissionDeniedError,
+      RateLimitError,
+      APIError,
+    } = await import("openai");
+    if (error instanceof AuthenticationError) {
+      return { success: false, error: "Invalid API key. Please check and try again." };
+    }
+    if (
+      error instanceof RateLimitError ||
+      error instanceof PermissionDeniedError ||
+      (error instanceof APIError && error.status >= 500)
+    ) {
+      return { success: true, data: undefined };
+    }
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    return { success: false, error: `API key validation failed: ${msg}` };
+  }
+}
+
 export function registerSettingsIpc(): void {
   // Validate an Anthropic API key with a minimal API call
   ipcMain.handle(
     "settings:validate-api-key",
-    async (_, { apiKey }: { apiKey: string }): Promise<IpcResponse<void>> => {
-      try {
-        const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    async (_, { apiKey }: { apiKey: string }): Promise<IpcResponse<void>> =>
+      validateAnthropicApiKeyValue(apiKey)
+  );
 
-        // Resolve model with fallback so config errors don't block validation
-        let model: string;
-        try {
-          model = resolveAnthropicValidationModelId(getConfig());
-        } catch {
-          model = "claude-haiku-4-5-20251001";
-        }
-
-        const client = new Anthropic({ apiKey, timeout: 10_000 });
-        await client.messages.create({
-          model,
-          max_tokens: 1,
-          messages: [{ role: "user", content: "hi" }],
-        });
-        return { success: true, data: undefined };
-      } catch (error) {
-        // Need Anthropic class for instanceof checks — safe to re-import (module cache)
-        const Anthropic = (await import("@anthropic-ai/sdk")).default;
-        if (error instanceof Anthropic.AuthenticationError) {
-          return { success: false, error: "Invalid API key. Please check and try again." };
-        }
-        // Rate limiting, overload (529), and permission denied (403) all happen after
-        // auth succeeds — the key is valid even if this specific request was rejected
-        if (error instanceof Anthropic.RateLimitError || error instanceof Anthropic.PermissionDeniedError || (error instanceof Anthropic.APIError && error.status === 529)) {
-          return { success: true, data: undefined };
-        }
-        const msg = error instanceof Error ? error.message : "Unknown error";
-        return { success: false, error: `API key validation failed: ${msg}` };
-      }
+  ipcMain.handle(
+    "settings:validate-provider-api-key",
+    async (
+      _,
+      { provider, apiKey }: { provider: "anthropic" | "openai"; apiKey: string }
+    ): Promise<IpcResponse<void>> => {
+      return provider === "openai"
+        ? validateOpenAiApiKeyValue(apiKey)
+        : validateAnthropicApiKeyValue(apiKey);
     }
   );
 
   // Get current config
   ipcMain.handle("settings:get", async (): Promise<IpcResponse<Config>> => {
     try {
-      return { success: true, data: getConfig() };
+      const config = getConfig();
+      return {
+        success: true,
+        data: {
+          ...config,
+          llm: {
+            ...DEFAULT_LLM_CONFIG,
+            ...getLlmConfig(),
+          },
+        },
+      };
     } catch (error) {
       return {
         success: false,

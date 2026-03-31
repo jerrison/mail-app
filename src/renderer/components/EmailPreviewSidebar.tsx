@@ -65,6 +65,7 @@ export const EmailPreviewSidebar = memo(function EmailPreviewSidebar() {
   const availableTabs = useAppStore((s) => s.availableSidebarTabs);
   const setAvailableTabs = useAppStore((s) => s.setAvailableSidebarTabs);
   const globalAgentTaskKey = useAppStore((s) => s.globalAgentTaskKey);
+  const defaultAgentProviderId = useAppStore((s) => s.defaultAgentProviderId);
   // Draft task key for agent tab — drafts use `draft:${id}` as their task key
   const draftTaskKey = selectedDraftId ? `draft:${selectedDraftId}` : null;
   const selectedEmail = emails.find((e) => e.id === selectedEmailId);
@@ -231,8 +232,14 @@ export const EmailPreviewSidebar = memo(function EmailPreviewSidebar() {
         const email = useAppStore.getState().emails.find((e) => e.id === emailIdSnapshot);
         if (!email) return;
 
+        const providerIds = [...new Set(
+          result.data.events
+            .map((event) => event.providerId)
+            .filter((providerId): providerId is string => Boolean(providerId))
+        )];
+
         // Replay entire trace in a single store update (avoids O(n²) from N appendAgentEvent calls)
-        replayAgentTrace(taskId, email.id, ["claude"], "", {
+        replayAgentTrace(taskId, email.id, providerIds.length > 0 ? providerIds : [defaultAgentProviderId ?? "claude"], "", {
           accountId: email.accountId || "",
           currentEmailId: email.id,
           currentThreadId: email.threadId,
@@ -244,7 +251,7 @@ export const EmailPreviewSidebar = memo(function EmailPreviewSidebar() {
     }, 500);
 
     return () => clearTimeout(timeoutId);
-  }, [selectedEmailIdForTrace, selectedEmailAgentTaskId, hasAgentTask, replayAgentTrace]);
+  }, [defaultAgentProviderId, selectedEmailIdForTrace, selectedEmailAgentTaskId, hasAgentTask, replayAgentTrace]);
 
   // No email selected — show agent panel if a draft or global task is active, otherwise empty state
   if (!selectedEmail || !latestEmail) {

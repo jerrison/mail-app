@@ -1,8 +1,8 @@
 import { ipcMain } from "electron";
 import { GmailClient } from "../services/gmail-client";
 import { saveEmail, getEmailIds, getInboxEmails, getEmail, saveAccount, getAccounts } from "../db";
-import { getConfig } from "./settings.ipc";
-import type { IpcResponse, DashboardEmail } from "../../shared/types";
+import { getLlmConfig } from "./settings.ipc";
+import type { IpcResponse, DashboardEmail, BuiltInLlmProviderId } from "../../shared/types";
 import { DEMO_INBOX_EMAILS, DEMO_EXPECTED_ANALYSIS } from "../demo/fake-inbox";
 
 const isTestMode = process.env.EXO_TEST_MODE === "true";
@@ -45,7 +45,20 @@ export function registerGmailIpc(): void {
   // Check authentication status
   ipcMain.handle(
     "gmail:check-auth",
-    async (): Promise<IpcResponse<{ hasCredentials: boolean; hasTokens: boolean; hasAnthropicKey: boolean }>> => {
+    async (): Promise<IpcResponse<{
+      hasCredentials: boolean;
+      hasTokens: boolean;
+      defaultProvider: BuiltInLlmProviderId;
+      hasDefaultBuiltInProviderAuth: boolean;
+      configuredProviders: BuiltInLlmProviderId[];
+    }>> => {
+      const llm = getLlmConfig();
+      const configuredProviders = (["anthropic", "openai"] as const).filter((provider) => {
+        return provider === "anthropic"
+          ? Boolean(llm.providers.anthropic.apiKey)
+          : Boolean(llm.providers.openai.apiKey);
+      });
+
       // In demo/test mode, always return authenticated
       if (useFakeData) {
         return {
@@ -53,20 +66,23 @@ export function registerGmailIpc(): void {
           data: {
             hasCredentials: true,
             hasTokens: true,
-            hasAnthropicKey: true,
+            defaultProvider: llm.defaultProvider,
+            hasDefaultBuiltInProviderAuth: true,
+            configuredProviders,
           },
         };
       }
 
       try {
         const client = new GmailClient();
-        const hasAnthropicKey = !!(process.env.ANTHROPIC_API_KEY || getConfig().anthropicApiKey);
         return {
           success: true,
           data: {
             hasCredentials: client.hasCredentials(),
             hasTokens: client.hasTokens(),
-            hasAnthropicKey,
+            defaultProvider: llm.defaultProvider,
+            hasDefaultBuiltInProviderAuth: configuredProviders.includes(llm.defaultProvider),
+            configuredProviders,
           },
         };
       } catch (error) {

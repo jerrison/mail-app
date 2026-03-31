@@ -61,3 +61,6 @@ src/agents-private/
 
 # gstack QA reports
 .gstack/
+
+# Local git worktrees for isolated feature execution
+.worktrees/

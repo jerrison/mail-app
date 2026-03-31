@@ -42,7 +42,11 @@ const BUILT_IN_PROVIDER_META: Record<
   },
 };
 
-function normalizeWizardLlmConfig(config?: Config["llm"]): LlmConfig {
+type NormalizedLlmConfig = Omit<LlmConfig, "providers"> & {
+  providers: Record<BuiltInLlmProviderId, { apiKey?: string }>;
+};
+
+function normalizeWizardLlmConfig(config?: Config["llm"]): NormalizedLlmConfig {
   return {
     ...DEFAULT_LLM_CONFIG,
     ...config,
@@ -80,7 +84,9 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
   const [apiKey, setApiKey] = useState("");
   const [selectedProvider, setSelectedProvider] = useState<BuiltInLlmProviderId>("anthropic");
   const [configuredProviders, setConfiguredProviders] = useState<BuiltInLlmProviderId[]>([]);
-  const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
+  const [llmConfig, setLlmConfig] = useState<NormalizedLlmConfig>(
+    normalizeWizardLlmConfig()
+  );
 
   // Extension auth state
   const [extensionAuths, setExtensionAuths] = useState<ExtensionAuthInfo[]>([]);
@@ -134,7 +140,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
         const authState = authResult.success ? authResult.data : fallbackAuth;
         const nextLlmConfig = settingsResult.success
           ? normalizeWizardLlmConfig(settingsResult.data.llm)
-          : DEFAULT_LLM_CONFIG;
+          : normalizeWizardLlmConfig();
 
         setConfiguredProviders(authState.configuredProviders);
         setLlmConfig({
@@ -221,7 +227,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
         }
       }
 
-      const nextLlmConfig: LlmConfig = {
+      const nextLlmConfig: NormalizedLlmConfig = {
         ...llmConfig,
         defaultProvider: selectedProvider,
         providers: {

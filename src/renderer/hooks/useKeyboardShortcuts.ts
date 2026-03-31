@@ -333,14 +333,16 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
         // Build combined nav list matching visual render order
         const items: ({ type: "draft"; draftId: string } | { type: "thread"; threadId: string; emailId: string })[] = [];
 
-        // Add drafts if we're in inbox view or drafts view
+        // In mixed list views, j/k should navigate thread rows, not local drafts
+        // that happen to render above them. Draft keyboard navigation remains
+        // available in the dedicated Drafts view.
         const accountDrafts = localDrafts.filter(
           (d) => !currentAccountId || d.accountId === currentAccountId
         );
         const isDraftsView = currentSplitId === "__drafts__";
 
         const isSnoozedView = currentSplitId === "__snoozed__";
-        if (isDraftsView || (accountDrafts.length > 0 && currentSplitId !== "__archive-ready__")) {
+        if (isDraftsView) {
           const draftsForNav = isSnoozedView
             ? accountDrafts.filter((d) => d.threadId && state.snoozedThreads.has(d.threadId))
             : accountDrafts;
@@ -1066,4 +1068,3 @@ export function getKeyboardShortcuts(bindings: "superhuman" | "gmail") {
     ],
   };
 }
-

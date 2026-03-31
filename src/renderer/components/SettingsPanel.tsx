@@ -70,7 +70,11 @@ const FEATURE_ROWS: Array<{
   { key: "agentChat", label: "Agent Chat", description: "Interactive agent sidebar conversations" },
 ];
 
-function normalizeRendererLlmConfig(config?: Config["llm"]): LlmConfig {
+type NormalizedLlmConfig = Omit<LlmConfig, "providers"> & {
+  providers: Record<BuiltInLlmProviderId, { apiKey?: string }>;
+};
+
+function normalizeRendererLlmConfig(config?: Config["llm"]): NormalizedLlmConfig {
   return {
     ...DEFAULT_LLM_CONFIG,
     ...config,
@@ -138,7 +142,9 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
 
   // General settings state
   const [enableSenderLookup, setEnableSenderLookup] = useState(true);
-  const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
+  const [llmConfig, setLlmConfig] = useState<NormalizedLlmConfig>(
+    normalizeRendererLlmConfig()
+  );
   const [isSavingGeneral, setIsSavingGeneral] = useState(false);
   const [generalSaveError, setGeneralSaveError] = useState<string | null>(null);
   const [isDefaultMailApp, setIsDefaultMailApp] = useState(false);
@@ -391,7 +397,7 @@ export function SettingsPanel({ onClose, initialTab }: SettingsPanelProps) {
     try {
       const trimmedAnthropicApiKey = llmConfig.providers.anthropic.apiKey?.trim() || undefined;
       const trimmedOpenAiApiKey = llmConfig.providers.openai.apiKey?.trim() || undefined;
-      const normalizedLlm: LlmConfig = {
+      const normalizedLlm: NormalizedLlmConfig = {
         ...llmConfig,
         providers: {
           anthropic: {

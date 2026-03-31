@@ -12,7 +12,7 @@ import {
   getAccounts,
   updateDraftAgentTaskId,
 } from "../db";
-import { getConfig, getModelIdForFeature } from "../ipc/settings.ipc";
+import { getConfig, getDefaultAgentProviderId, getModelIdForFeature } from "../ipc/settings.ipc";
 import { getExtensionHost } from "../extensions";
 import { agentCoordinator } from "../agents/agent-coordinator";
 import type { AgentContext } from "../agents/types";
@@ -999,7 +999,7 @@ When you see emails in a thread where ${eaName} is coordinating scheduling with 
       this.activeAgentTaskIds.set(emailId, taskId);
 
       // Launch the agent and await its actual completion (not just startup)
-      await agentCoordinator.runAgent(taskId, ["claude"], prompt, context);
+      await agentCoordinator.runAgent(taskId, [getDefaultAgentProviderId()], prompt, context);
       await agentCoordinator.waitForCompletion(taskId);
 
       // Link the draft record to the agent task so the trace can be loaded later

@@ -2,7 +2,7 @@ import { ipcMain } from "electron";
 import { execFile, execFileSync } from "child_process";
 import { agentCoordinator } from "../agents/agent-coordinator";
 import { authenticateProvider } from "../agents/private-providers-main";
-import { getModelIdForFeature } from "./settings.ipc";
+import { getDefaultAgentProviderId, getModelIdForFeature } from "./settings.ipc";
 import { getAgentTrace } from "../db";
 import type { AgentContext } from "../agents/types";
 import type { ScopedAgentEvent } from "../agents/types";
@@ -45,9 +45,12 @@ export function registerAgentIpc(): void {
       }
     ): Promise<IpcResponse<{ taskId: string }>> => {
       try {
+        const effectiveProviderIds = providerIds.length > 0
+          ? providerIds
+          : [getDefaultAgentProviderId()];
         // Interactive agent tasks use the agentChat model (defaults to opus)
         const modelOverride = getModelIdForFeature("agentChat");
-        await agentCoordinator.runAgent(taskId, providerIds, prompt, context, modelOverride);
+        await agentCoordinator.runAgent(taskId, effectiveProviderIds, prompt, context, modelOverride);
         return { success: true, data: { taskId } };
       } catch (error) {
         return {

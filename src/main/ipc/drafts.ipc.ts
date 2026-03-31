@@ -3,7 +3,7 @@ import { DraftGenerator } from "../services/draft-generator";
 import { generateDraftForEmail } from "../services/draft-pipeline";
 import { getEmail, deleteDraft, deleteAgentTrace, clearInboxPendingDraftsAndTraces, getInboxPendingDraftsWithGmail, updateDraftAgentTaskId } from "../db";
 import { saveDraftAndSync, deleteGmailDraftById, deleteGmailDraftsBatch } from "../services/gmail-draft-sync";
-import { getConfig, getModelIdForFeature } from "./settings.ipc";
+import { getConfig, getDefaultAgentProviderId, getModelIdForFeature } from "./settings.ipc";
 import { createBuiltInLlmClient } from "../llm";
 import { buildMemoryContext } from "../services/memory-context";
 import { prefetchService } from "../services/prefetch-service";
@@ -191,7 +191,7 @@ FORMATTING: Write plain text paragraphs separated by blank lines. Do NOT use HTM
         prefetchService.trackManualAgentDraft(emailId, taskId);
 
         // Launch agent — events auto-stream to renderer via agent:event IPC
-        await agentCoordinator.runAgent(taskId, ["claude"], prompt, context);
+        await agentCoordinator.runAgent(taskId, [getDefaultAgentProviderId()], prompt, context);
 
         // Link draft to agent task when it completes (async, don't block response)
         agentCoordinator.waitForCompletion(taskId).then(() => {

@@ -212,16 +212,27 @@ export function registerSettingsIpc(): void {
           autoUpdateService.setAllowPrerelease(!!newConfig.allowPrereleaseUpdates);
         }
 
-        // If anthropicApiKey changed, propagate to process.env (for Anthropic SDK)
-        // and to the agent worker (for Claude Agent SDK)
-        if ("anthropicApiKey" in config) {
-          if (newConfig.anthropicApiKey) {
-            process.env.ANTHROPIC_API_KEY = newConfig.anthropicApiKey;
+        // Keep provider-neutral LLM credentials in sync with the worker and legacy env vars.
+        if ("anthropicApiKey" in config || "llm" in config) {
+          const llmConfig = normalizeLlmConfig(newConfig);
+          const anthropicApiKey = llmConfig.providers.anthropic.apiKey || undefined;
+          const openaiApiKey = llmConfig.providers.openai.apiKey || undefined;
+
+          if (anthropicApiKey) {
+            process.env.ANTHROPIC_API_KEY = anthropicApiKey;
           } else {
             delete process.env.ANTHROPIC_API_KEY;
           }
+
+          if (openaiApiKey) {
+            process.env.OPENAI_API_KEY = openaiApiKey;
+          } else {
+            delete process.env.OPENAI_API_KEY;
+          }
+
           agentCoordinator.updateConfig({
-            anthropicApiKey: newConfig.anthropicApiKey || undefined,
+            anthropicApiKey,
+            openaiApiKey,
           });
         }
 
@@ -262,15 +273,15 @@ export function registerSettingsIpc(): void {
         // Only agentDrafter needs propagation here — it's the worker's default model for
         // auto-draft tasks that don't pass a per-task override. The agentChat model is
         // resolved fresh per-invocation in agent.ipc.ts via getModelIdForFeature("agentChat").
-        if ("modelConfig" in config) {
+        if ("modelConfig" in config || "llm" in config) {
           agentCoordinator.updateConfig({
             model: getModelIdForFeature("agentDrafter"),
           });
         }
 
-        // Reset cached analyzer/service instances when model config or API key changes,
-        // since they hold Anthropic client instances that capture the key at construction.
-        if ("modelConfig" in config || "anthropicApiKey" in config) {
+        // Reset cached analyzer/service instances when the effective built-in LLM config
+        // changes, since they capture provider/model credentials at construction time.
+        if ("modelConfig" in config || "anthropicApiKey" in config || "llm" in config) {
           resetAnalyzer();
           resetArchiveReadyAnalyzer();
           prefetchService.reset();

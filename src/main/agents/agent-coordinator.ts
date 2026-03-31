@@ -19,6 +19,7 @@ import { saveDraftAndSync } from "../services/gmail-draft-sync";
 import { DEFAULT_STYLE_PROMPT } from "../../shared/types";
 import { populatePrivateProviderConfig } from "./private-providers-main";
 import { createBuiltInLlmClient } from "../llm";
+import { normalizeLlmConfig } from "../llm/config";
 
 /**
  * Coordinates the agent utility process from the main process.
@@ -122,6 +123,49 @@ export class AgentCoordinator {
     // Worker is spawned lazily on first use via ensureWorker()
   }
 
+  private resolveAgentApiKeys() {
+    const appConfig = getConfig();
+    const normalized = normalizeLlmConfig(appConfig);
+    return {
+      anthropicApiKey: normalized.providers.anthropic.apiKey || process.env.ANTHROPIC_API_KEY || undefined,
+      openaiApiKey: normalized.providers.openai.apiKey || process.env.OPENAI_API_KEY || undefined,
+    };
+  }
+
+  private buildWorkerConfig(): AgentFrameworkConfig {
+    const appConfig = getConfig();
+    const { anthropicApiKey, openaiApiKey } = this.resolveAgentApiKeys();
+    const browser = appConfig.agentBrowser;
+
+    return {
+      model: getModelIdForFeature("agentDrafter"),
+      anthropicApiKey,
+      openaiApiKey,
+      browserConfig: browser ? {
+        enabled: browser.enabled,
+        chromeDebugPort: browser.chromeDebugPort,
+        chromeProfilePath: browser.chromeProfilePath,
+      } : undefined,
+      mcpServers: appConfig.mcpServers,
+      providers: {
+        "openclaw-agent": {
+          enabled: appConfig.openclaw?.enabled ?? false,
+          gatewayUrl: appConfig.openclaw?.gatewayUrl ?? "",
+          gatewayToken: appConfig.openclaw?.gatewayToken ?? "",
+        },
+      },
+    };
+  }
+
+  private buildProviderLoadConfig(): AgentFrameworkConfig {
+    const { anthropicApiKey, openaiApiKey } = this.resolveAgentApiKeys();
+    return {
+      model: getModelIdForFeature("agentDrafter"),
+      anthropicApiKey,
+      openaiApiKey,
+    };
+  }
+
   private spawnWorker(): void {
     // Worker lives in out/worker/, one level up from out/main/ where __dirname points
     const workerPath = path.join(__dirname, "..", "worker", "agent-worker.cjs");
@@ -170,28 +214,7 @@ export class AgentCoordinator {
 
     // Auto-init the worker with framework config so it's ready for commands.
     // Config is enriched asynchronously by private provider modules before being sent.
-    // Read API key from app config first, fall back to env var; use undefined (not "")
-    // when neither exists so the SDK falls through to Claude Code's stored OAuth.
-    const appConfig = getConfig();
-    const apiKey = appConfig.anthropicApiKey || process.env.ANTHROPIC_API_KEY || undefined;
-    const browser = appConfig.agentBrowser;
-    const baseConfig: AgentFrameworkConfig = {
-      model: getModelIdForFeature("agentDrafter"),
-      anthropicApiKey: apiKey,
-      browserConfig: browser ? {
-        enabled: browser.enabled,
-        chromeDebugPort: browser.chromeDebugPort,
-        chromeProfilePath: browser.chromeProfilePath,
-      } : undefined,
-      mcpServers: appConfig.mcpServers,
-      providers: {
-        "openclaw-agent": {
-          enabled: appConfig.openclaw?.enabled ?? false,
-          gatewayUrl: appConfig.openclaw?.gatewayUrl ?? "",
-          gatewayToken: appConfig.openclaw?.gatewayToken ?? "",
-        },
-      },
-    };
+    const baseConfig = this.buildWorkerConfig();
     this.workerReady = populatePrivateProviderConfig(baseConfig).then(
       (enrichedConfig) => { this.initWorker(enrichedConfig); },
       () => { this.initWorker(baseConfig); }, // Fallback to base config on error
@@ -206,10 +229,7 @@ export class AgentCoordinator {
             type: "load_provider",
             providerId,
             providerPath,
-            config: {
-              model: getModelIdForFeature("agentDrafter"),
-              anthropicApiKey: getConfig().anthropicApiKey || process.env.ANTHROPIC_API_KEY || undefined,
-            },
+            config: this.buildProviderLoadConfig(),
           });
         }
       });
@@ -431,11 +451,7 @@ export class AgentCoordinator {
     this.installedProviders.set(providerId, providerPath);
 
     // Send config_update first so worker has latest config
-    const appConfig = getConfig();
-    const config: AgentFrameworkConfig = {
-      model: getModelIdForFeature("agentDrafter"),
-      anthropicApiKey: appConfig.anthropicApiKey || process.env.ANTHROPIC_API_KEY || undefined,
-    };
+    const config = this.buildProviderLoadConfig();
     this.sendToWorker({ type: "config_update", config });
 
     // Then send load_provider and wait for response

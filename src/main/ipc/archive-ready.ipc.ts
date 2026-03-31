@@ -13,6 +13,7 @@ import {
 import { getConfig, getModelIdForFeature } from "./settings.ipc";
 import { getEmailSyncService } from "./sync.ipc";
 import type { IpcResponse, DashboardEmail } from "../../shared/types";
+import { createBuiltInLlmClient } from "../llm";
 
 const isTestMode = process.env.EXO_TEST_MODE === "true";
 const isDemoMode = process.env.EXO_DEMO_MODE === "true";
@@ -23,7 +24,11 @@ let analyzer: ArchiveReadyAnalyzer | null = null;
 function getAnalyzer(): ArchiveReadyAnalyzer {
   if (!analyzer) {
     const config = getConfig();
-    analyzer = new ArchiveReadyAnalyzer(getModelIdForFeature("archiveReady"), config.archiveReadyPrompt);
+    analyzer = new ArchiveReadyAnalyzer(
+      getModelIdForFeature("archiveReady"),
+      config.archiveReadyPrompt,
+      createBuiltInLlmClient(config)
+    );
   }
   return analyzer;
 }

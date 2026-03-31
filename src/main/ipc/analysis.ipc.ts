@@ -6,6 +6,7 @@ import type { IpcResponse, DashboardEmail, Email } from "../../shared/types";
 import { DEMO_INBOX_EMAILS, DEMO_EXPECTED_ANALYSIS } from "../demo/fake-inbox";
 import { learnFromPriorityOverrideWithReason, learnFromPriorityOverrideInferred } from "../services/analysis-edit-learner";
 import { stripQuotedContent } from "../services/strip-quoted-content";
+import { createBuiltInLlmClient } from "../llm";
 
 const isTestMode = process.env.EXO_TEST_MODE === "true";
 const isDemoMode = process.env.EXO_DEMO_MODE === "true";
@@ -31,7 +32,11 @@ let analyzer: EmailAnalyzer | null = null;
 function getAnalyzer(): EmailAnalyzer {
   if (!analyzer) {
     const config = getConfig();
-    analyzer = new EmailAnalyzer(getModelIdForFeature("analysis"), config.analysisPrompt);
+    analyzer = new EmailAnalyzer(
+      getModelIdForFeature("analysis"),
+      config.analysisPrompt,
+      createBuiltInLlmClient(config)
+    );
   }
   return analyzer;
 }

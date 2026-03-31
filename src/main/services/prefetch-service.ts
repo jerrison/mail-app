@@ -18,6 +18,7 @@ import { agentCoordinator } from "../agents/agent-coordinator";
 import type { AgentContext } from "../agents/types";
 import { DEFAULT_AGENT_DRAFTER_PROMPT } from "../../shared/types";
 import type { Email, DashboardEmail } from "../../shared/types";
+import { createBuiltInLlmClient } from "../llm";
 
 // Lazy import to avoid circular dependency
 let notifyEmailAnalyzed: ((emailId: string) => void) | null = null;
@@ -134,7 +135,11 @@ When you see emails in a thread where ${eaName} is coordinating scheduling with 
   private getAnalyzer(): EmailAnalyzer {
     if (!this.analyzer) {
       const config = getConfig();
-      this.analyzer = new EmailAnalyzer(getModelIdForFeature("analysis"), config.analysisPrompt);
+      this.analyzer = new EmailAnalyzer(
+        getModelIdForFeature("analysis"),
+        config.analysisPrompt,
+        createBuiltInLlmClient(config)
+      );
     }
     return this.analyzer;
   }
@@ -142,7 +147,11 @@ When you see emails in a thread where ${eaName} is coordinating scheduling with 
   private getArchiveReadyAnalyzer(): ArchiveReadyAnalyzer {
     if (!this.archiveReadyAnalyzer) {
       const config = getConfig();
-      this.archiveReadyAnalyzer = new ArchiveReadyAnalyzer(getModelIdForFeature("archiveReady"), config.archiveReadyPrompt);
+      this.archiveReadyAnalyzer = new ArchiveReadyAnalyzer(
+        getModelIdForFeature("archiveReady"),
+        config.archiveReadyPrompt,
+        createBuiltInLlmClient(config)
+      );
     }
     return this.archiveReadyAnalyzer;
   }

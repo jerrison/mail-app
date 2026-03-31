@@ -3,21 +3,16 @@
  *
  * The ArchiveReadyAnalyzer cannot be imported directly because it transitively
  * imports electron (via db). Instead, we re-implement the pure/testable logic
- * inline and test the Anthropic API interaction by constructing the real class
- * and replacing its `anthropic` property with a mock.
+ * inline and test provider-neutral LLM interaction by constructing the real class
+ * with an injected built-in LLM mock client.
  *
  * Testable pure logic:
  * - formatThreadForAnalysis: builds the prompt from thread emails
  * - isFromUser: determines if an email is from the user
- * - analyzeThread: calls Claude API and parses the response
+ * - analyzeThread: calls LLM client and parses the response
  */
 import { test, expect } from "@playwright/test";
-import {
-  MockAnthropic,
-  mockAnthropicResponse,
-  resetAnthropicMock,
-  getCapturedRequests,
-} from "../mocks/anthropic-api-mock";
+import { MockBuiltInLlmClient } from "../mocks/built-in-llm-mock";
 import { ArchiveReadyAnalyzer } from "../../src/main/services/archive-ready-analyzer";
 import {
   ARCHIVE_READY_JSON_FORMAT,
@@ -118,14 +113,14 @@ function makeDashboardEmail(
 
 function createAnalyzerWithMock(prompt?: string): {
   analyzer: ArchiveReadyAnalyzer;
-  mock: MockAnthropic;
+  mock: MockBuiltInLlmClient;
 } {
+  const mock = new MockBuiltInLlmClient();
   const analyzer = new ArchiveReadyAnalyzer(
     "claude-sonnet-4-20250514",
-    prompt
+    prompt,
+    mock
   );
-  const mock = new MockAnthropic();
-  (analyzer as { anthropic: unknown }).anthropic = mock;
   return { analyzer, mock };
 }
 
@@ -330,19 +325,15 @@ test.describe("formatThreadForAnalysis", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: analyzeThread (via mocked Anthropic API)
+// Tests: analyzeThread (via mocked built-in LLM client)
 // ---------------------------------------------------------------------------
 
 test.describe("ArchiveReadyAnalyzer.analyzeThread", () => {
-  test.beforeEach(() => {
-    resetAnthropicMock();
-  });
-
   test("returns archive_ready=true when Claude says so", async () => {
-    mockAnthropicResponse({
-      text: '{"archive_ready": true, "reason": "User replied, no follow-up needed"}',
-    });
-    const { analyzer } = createAnalyzerWithMock();
+    const { analyzer, mock } = createAnalyzerWithMock();
+    mock.push(
+      '{"archive_ready": true, "reason": "User replied, no follow-up needed"}'
+    );
     const emails = [makeDashboardEmail()];
 
     const result = await analyzer.analyzeThread(emails);
@@ -352,10 +343,10 @@ test.describe("ArchiveReadyAnalyzer.analyzeThread", () => {
   });
 
   test("returns archive_ready=false when Claude says so", async () => {
-    mockAnthropicResponse({
-      text: '{"archive_ready": false, "reason": "Awaiting response from sender"}',
-    });
-    const { analyzer } = createAnalyzerWithMock();
+    const { analyzer, mock } = createAnalyzerWithMock();
+    mock.push(
+      '{"archive_ready": false, "reason": "Awaiting response from sender"}'
+    );
     const emails = [makeDashboardEmail()];
 
     const result = await analyzer.analyzeThread(emails);
@@ -365,10 +356,8 @@ test.describe("ArchiveReadyAnalyzer.analyzeThread", () => {
   });
 
   test("handles JSON wrapped in markdown code fences", async () => {
-    mockAnthropicResponse({
-      text: '```json\n{"archive_ready": true, "reason": "Done"}\n```',
-    });
-    const { analyzer } = createAnalyzerWithMock();
+    const { analyzer, mock } = createAnalyzerWithMock();
+    mock.push('```json\n{"archive_ready": true, "reason": "Done"}\n```');
     const emails = [makeDashboardEmail()];
 
     const result = await analyzer.analyzeThread(emails);
@@ -378,10 +367,8 @@ test.describe("ArchiveReadyAnalyzer.analyzeThread", () => {
   });
 
   test("returns safe default on parse failure", async () => {
-    mockAnthropicResponse({
-      text: "I cannot determine this in JSON format, sorry.",
-    });
-    const { analyzer } = createAnalyzerWithMock();
+    const { analyzer, mock } = createAnalyzerWithMock();
+    mock.push("I cannot determine this in JSON format, sorry.");
     const emails = [makeDashboardEmail()];
 
     const result = await analyzer.analyzeThread(emails);
@@ -391,49 +378,43 @@ test.describe("ArchiveReadyAnalyzer.analyzeThread", () => {
   });
 
   test("uses custom prompt with JSON format appended", async () => {
-    mockAnthropicResponse({
-      text: '{"archive_ready": true, "reason": "custom"}',
-    });
     const customPrompt = "You are a custom archive analyzer.";
-    const { analyzer } = createAnalyzerWithMock(customPrompt);
+    const { analyzer, mock } = createAnalyzerWithMock(customPrompt);
+    mock.push('{"archive_ready": true, "reason": "custom"}');
     const emails = [makeDashboardEmail()];
 
     await analyzer.analyzeThread(emails);
 
-    const requests = getCapturedRequests();
+    const requests = mock.calls;
     expect(requests).toHaveLength(1);
-    const systemText = (requests[0].system as Array<{ text: string }>)[0].text;
+    const systemText = requests[0].system;
     expect(systemText).toBe(customPrompt + ARCHIVE_READY_JSON_FORMAT);
   });
 
   test("uses default prompt with JSON format when no custom prompt", async () => {
-    mockAnthropicResponse({
-      text: '{"archive_ready": false, "reason": "test"}',
-    });
-    const { analyzer } = createAnalyzerWithMock();
+    const { analyzer, mock } = createAnalyzerWithMock();
+    mock.push('{"archive_ready": false, "reason": "test"}');
     const emails = [makeDashboardEmail()];
 
     await analyzer.analyzeThread(emails);
 
-    const requests = getCapturedRequests();
-    const systemText = (requests[0].system as Array<{ text: string }>)[0].text;
+    const requests = mock.calls;
+    const systemText = requests[0].system;
     expect(systemText).toBe(
       DEFAULT_ARCHIVE_READY_PROMPT + ARCHIVE_READY_JSON_FORMAT
     );
   });
 
   test("does not treat default prompt as custom (no double-append)", async () => {
-    mockAnthropicResponse({
-      text: '{"archive_ready": false, "reason": "test"}',
-    });
     // Pass the default prompt explicitly — constructor treats it as non-custom
-    const { analyzer } = createAnalyzerWithMock(DEFAULT_ARCHIVE_READY_PROMPT);
+    const { analyzer, mock } = createAnalyzerWithMock(DEFAULT_ARCHIVE_READY_PROMPT);
+    mock.push('{"archive_ready": false, "reason": "test"}');
     const emails = [makeDashboardEmail()];
 
     await analyzer.analyzeThread(emails);
 
-    const requests = getCapturedRequests();
-    const systemText = (requests[0].system as Array<{ text: string }>)[0].text;
+    const requests = mock.calls;
+    const systemText = requests[0].system;
     // Should use default + JSON format, not default + JSON format + JSON format
     expect(systemText).toBe(
       DEFAULT_ARCHIVE_READY_PROMPT + ARCHIVE_READY_JSON_FORMAT
@@ -441,16 +422,13 @@ test.describe("ArchiveReadyAnalyzer.analyzeThread", () => {
   });
 
   test("passes userEmail to the formatted thread content", async () => {
-    mockAnthropicResponse({
-      text: '{"archive_ready": true, "reason": "test"}',
-    });
-    const { analyzer } = createAnalyzerWithMock();
+    const { analyzer, mock } = createAnalyzerWithMock();
+    mock.push('{"archive_ready": true, "reason": "test"}');
     const emails = [makeDashboardEmail()];
 
     await analyzer.analyzeThread(emails, "me@company.com");
 
-    const requests = getCapturedRequests();
-    const userContent = (requests[0].messages[0] as { content: string }).content;
-    expect(userContent).toContain("User's email: me@company.com");
+    const requests = mock.calls;
+    expect(requests[0].input).toContain("User's email: me@company.com");
   });
 });

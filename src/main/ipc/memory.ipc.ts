@@ -1,6 +1,5 @@
 import { ipcMain } from "electron";
 import { randomUUID } from "crypto";
-import Anthropic from "@anthropic-ai/sdk";
 import {
   saveMemory,
   getMemory,
@@ -15,6 +14,8 @@ import {
 } from "../db";
 import type { IpcResponse, Memory, DraftMemory, MemoryScope, MemorySource, MemoryType } from "../../shared/types";
 import { consolidateMemoryScopes } from "../services/draft-edit-learner";
+import { createBuiltInLlmClient } from "../llm";
+import { getConfig, getModelIdForFeature } from "./settings.ipc";
 
 export function registerMemoryIpc(): void {
   // Memory operations use the real SQLite DB even in demo/test mode —
@@ -146,13 +147,13 @@ export function registerMemoryIpc(): void {
         };
       }
       try {
-        const anthropic = new Anthropic();
-        const response = await anthropic.messages.create({
-          model: "claude-haiku-4-5-20251001", // simple JSON classification — always haiku, independent of user model config
-          max_tokens: 256,
-          messages: [{
-            role: "user",
-            content: `Classify this email preference/feedback into a scope for future application.
+        const config = getConfig();
+        const llm = createBuiltInLlmClient(config);
+        const response = await llm.generate({
+          model: getModelIdForFeature("senderLookup"), // simple JSON classification using provider-selected fast model
+          maxOutputTokens: 256,
+          mode: "json",
+          input: `Classify this email preference/feedback into a scope for future application.
 
 Feedback: "${content}"
 Sender email: ${senderEmail}
@@ -164,10 +165,9 @@ Determine:
 3. content: rephrase the feedback as a clear, reusable instruction (e.g. "Use formal tone" instead of "make it more formal")
 
 Respond in JSON only: {"scope":"...","scopeValue":"...","content":"..."}`,
-          }],
         });
 
-        const text = response.content[0]?.type === "text" ? response.content[0].text : "";
+        const text = response.text;
         // Extract JSON object — find the first { and match to its closing }
         const jsonStart = text.indexOf("{");
         if (jsonStart === -1) {

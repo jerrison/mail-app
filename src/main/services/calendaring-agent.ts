@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { stripJsonFences } from "../../shared/strip-json-fences";
 import {
   DEFAULT_CALENDARING_PROMPT,
@@ -7,26 +6,26 @@ import {
   type EAConfig,
   type Email,
 } from "../../shared/types";
+import { createBuiltInLlmClient } from "../llm";
+import type { BuiltInLlmClient } from "../llm/types";
 
 export class CalendaringAgent {
-  private anthropic: Anthropic;
+  private llm: BuiltInLlmClient;
   private model: string;
   private prompt: string;
 
-  constructor(model: string = "claude-sonnet-4-20250514", prompt?: string) {
-    this.anthropic = new Anthropic();
+  constructor(model: string = "claude-sonnet-4-20250514", prompt?: string, llmClient?: BuiltInLlmClient) {
+    this.llm = llmClient ?? createBuiltInLlmClient({ anthropicApiKey: process.env.ANTHROPIC_API_KEY });
     this.model = model;
     this.prompt = prompt || DEFAULT_CALENDARING_PROMPT;
   }
 
   async analyze(email: Email): Promise<CalendaringResult> {
-    const response = await this.anthropic.messages.create({
+    const response = await this.llm.generate({
       model: this.model,
-      max_tokens: 512,
-      messages: [
-        {
-          role: "user",
-          content: `${this.prompt}
+      maxOutputTokens: 512,
+      mode: "json",
+      input: `${this.prompt}
 
 ---
 EMAIL TO ANALYZE:
@@ -37,17 +36,14 @@ Subject: ${email.subject}
 Date: ${email.date}
 
 ${email.body}`,
-        },
-      ],
     });
 
-    const textBlock = response.content.find((block) => block.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      throw new Error("No text response from Claude");
+    if (!response.text) {
+      throw new Error("No text response from LLM");
     }
 
     try {
-      const parsed = JSON.parse(stripJsonFences(textBlock.text));
+      const parsed = JSON.parse(stripJsonFences(response.text));
       return {
         hasSchedulingContext: Boolean(parsed.hasSchedulingContext),
         action: parsed.action || "none",
@@ -55,7 +51,7 @@ ${email.body}`,
       };
     } catch {
       // If JSON parsing fails, return a default
-      console.error("Failed to parse calendaring response:", textBlock.text);
+      console.error("Failed to parse calendaring response:", response.text);
       return {
         hasSchedulingContext: false,
         action: "none",

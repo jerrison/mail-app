@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { stripJsonFences } from "../../shared/strip-json-fences";
 import {
   ARCHIVE_READY_JSON_FORMAT,
@@ -8,14 +7,16 @@ import {
   type DashboardEmail,
 } from "../../shared/types";
 import { stripQuotedContent } from "./strip-quoted-content";
+import { createBuiltInLlmClient } from "../llm";
+import type { BuiltInLlmClient } from "../llm/types";
 
 export class ArchiveReadyAnalyzer {
-  private anthropic: Anthropic;
+  private llm: BuiltInLlmClient;
   private model: string;
   private customPrompt: string | null;
 
-  constructor(model: string = "claude-sonnet-4-20250514", prompt?: string) {
-    this.anthropic = new Anthropic();
+  constructor(model: string = "claude-sonnet-4-20250514", prompt?: string, llmClient?: BuiltInLlmClient) {
+    this.llm = llmClient ?? createBuiltInLlmClient({ anthropicApiKey: process.env.ANTHROPIC_API_KEY });
     this.model = model;
     this.customPrompt = prompt && prompt !== DEFAULT_ARCHIVE_READY_PROMPT ? prompt : null;
   }
@@ -31,42 +32,25 @@ export class ArchiveReadyAnalyzer {
       ? this.customPrompt + ARCHIVE_READY_JSON_FORMAT
       : DEFAULT_ARCHIVE_READY_PROMPT + ARCHIVE_READY_JSON_FORMAT;
 
-    const response = await this.anthropic.messages.create({
+    const response = await this.llm.generate({
       model: this.model,
-      max_tokens: 256,
-      system: [
-        {
-          type: "text",
-          text: systemPrompt,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      messages: [
-        {
-          role: "user",
-          content: threadContent,
-        },
-      ],
+      maxOutputTokens: 256,
+      mode: "json",
+      system: systemPrompt,
+      input: threadContent,
     });
 
-    // Log cache performance
-    const usage = response.usage as unknown as Record<string, number>;
-    console.log(
-      `[ArchiveReady] Usage: input=${usage.input_tokens}, output=${usage.output_tokens}, cache_read=${usage.cache_read_input_tokens || 0}, cache_create=${usage.cache_creation_input_tokens || 0}`
-    );
-
-    const textBlock = response.content.find((block) => block.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      throw new Error("No text response from Claude");
+    if (!response.text) {
+      throw new Error("No text response from LLM");
     }
 
     try {
-      const parsed = JSON.parse(stripJsonFences(textBlock.text));
+      const parsed = JSON.parse(stripJsonFences(response.text));
       return ArchiveReadyResultSchema.parse(parsed);
     } catch (error) {
       console.error(
         "Failed to parse archive-ready response:",
-        textBlock.text
+        response.text
       );
       return {
         archive_ready: false,

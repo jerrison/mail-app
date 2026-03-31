@@ -16,19 +16,11 @@
  * Analysis memories are injected into the analysis prompt (not the draft prompt).
  */
 import { randomUUID } from "crypto";
-import Anthropic from "@anthropic-ai/sdk";
-import {
-  getDraftMemories,
-  saveDraftMemory,
-  incrementDraftMemoryVote,
-  deleteDraftMemory,
-  evictOldestDraftMemories,
-  saveMemory,
-  getMemories,
-} from "../db";
-import { consolidateMemoryScopes, filterAgainstPromotedMemories } from "./draft-edit-learner";
-import { parseJsonArray, normalizeScope, CONSUMER_DOMAINS } from "./memory-learner-utils";
+import { consolidateMemoryScopes, filterAgainstPromotedMemories, runLearnerJsonPrompt } from "./draft-edit-learner";
+import { normalizeScope, CONSUMER_DOMAINS } from "./memory-learner-utils";
 import type { Memory, MemoryScope, DraftMemory } from "../../shared/types";
+import { createBuiltInLlmClient } from "../llm";
+import type { BuiltInLlmClient } from "../llm/types";
 
 /** Promotion threshold — lower than drafting (3) since priority overrides are rarer */
 const PROMOTION_THRESHOLD = 2;
@@ -61,6 +53,18 @@ export interface AnalysisLearnResult {
   draftMemoriesCreated: number;
 }
 
+type LearnerLlmDeps = {
+  llm: BuiltInLlmClient;
+  model: string;
+};
+
+function resolveLearnerLlmDeps(deps?: Partial<LearnerLlmDeps>): LearnerLlmDeps {
+  return {
+    llm: deps?.llm ?? createBuiltInLlmClient({ anthropicApiKey: process.env.ANTHROPIC_API_KEY }),
+    model: deps?.model ?? "claude-sonnet-4-20250514",
+  };
+}
+
 /**
  * Learn from a priority override with an explicit reason.
  * Saves directly as a promoted memory — no draft memory tier needed.
@@ -71,11 +75,13 @@ export async function learnFromPriorityOverrideWithReason(params: {
   senderDomain: string;
   reason: string;
   emailId: string;
-}): Promise<{ memory: Memory; saved: boolean }> {
+}, deps?: Partial<LearnerLlmDeps>): Promise<{ memory: Memory; saved: boolean }> {
+  const { saveMemory, getMemories } = await import("../db");
+  const llmDeps = resolveLearnerLlmDeps(deps);
   const { accountId, senderEmail, senderDomain, reason, emailId } = params;
 
-  // Classify scope via Claude (cheap Haiku call)
-  const scope = await classifyScope(reason, senderEmail, senderDomain);
+  // Classify scope via shared LLM client
+  const scope = await classifyScope(reason, senderEmail, senderDomain, llmDeps);
 
   const now = Date.now();
   const memory: Memory = {
@@ -99,6 +105,7 @@ export async function learnFromPriorityOverrideWithReason(params: {
     existing,
     accountId,
     { source: "priority-override", memoryType: "analysis" },
+    llmDeps,
   );
 
   if (result.action === "duplicate") {
@@ -125,13 +132,24 @@ export async function learnFromPriorityOverrideWithReason(params: {
  */
 export async function learnFromPriorityOverrideInferred(
   override: AnalysisOverride,
+  deps?: Partial<LearnerLlmDeps>,
 ): Promise<AnalysisLearnResult> {
+  const {
+    getDraftMemories,
+    saveDraftMemory,
+    incrementDraftMemoryVote,
+    deleteDraftMemory,
+    evictOldestDraftMemories,
+    saveMemory,
+    getMemories,
+  } = await import("../db");
+  const llmDeps = resolveLearnerLlmDeps(deps);
   const { accountId, senderEmail, senderDomain, subject } = override;
 
   console.log(`[AnalysisEditLearner] Inferring patterns from priority override: ${formatOverrideDescription(override)}`);
 
   // 1. Extract observations via Claude
-  const observations = await analyzeOverride(override);
+  const observations = await analyzeOverride(override, llmDeps);
   if (!observations || observations.length === 0) {
     console.log(`[AnalysisEditLearner] No observations extracted — nothing to save`);
     return { promoted: [], draftMemoriesCreated: 0 };
@@ -139,7 +157,7 @@ export async function learnFromPriorityOverrideInferred(
 
   // 2. Filter against already-promoted analysis memories
   const promotedMemories = getMemories(accountId, "analysis").filter(m => m.enabled);
-  const filteredObservations = await filterAgainstPromotedMemories(observations, promotedMemories);
+  const filteredObservations = await filterAgainstPromotedMemories(observations, promotedMemories, llmDeps);
   if (filteredObservations.length === 0) {
     console.log(`[AnalysisEditLearner] All observations already covered by promoted memories`);
     return { promoted: [], draftMemoriesCreated: 0 };
@@ -151,7 +169,7 @@ export async function learnFromPriorityOverrideInferred(
   // 4. Match observations to existing draft memories
   let matches: Array<{ observationIndex: number; matchedDraftMemoryId: string | null }>;
   if (existingDraftMemories.length > 0) {
-    matches = await matchAnalysisDraftMemories(filteredObservations, existingDraftMemories);
+    matches = await matchAnalysisDraftMemories(filteredObservations, existingDraftMemories, llmDeps);
   } else {
     matches = filteredObservations.map((_, i) => ({ observationIndex: i, matchedDraftMemoryId: null }));
   }
@@ -180,6 +198,7 @@ export async function learnFromPriorityOverrideInferred(
           { content: updated.content, scope: updated.scope, scopeValue: updated.scopeValue === null || updated.scope === "global" ? null : updated.scopeValue },
           currentPromoted, accountId,
           { source: "priority-override", memoryType: "analysis" },
+          llmDeps,
         );
 
         if (result.action === "duplicate") {
@@ -258,21 +277,35 @@ export async function learnFromPriorityOverrideInferred(
 /**
  * Use Claude to extract generalizable observations from a priority override.
  */
-async function analyzeOverride(override: AnalysisOverride): Promise<AnalysisObservation[] | null> {
+async function analyzeOverride(
+  override: AnalysisOverride,
+  deps: LearnerLlmDeps
+): Promise<AnalysisObservation[] | null> {
+  return extractPriorityPreferences({ llm: deps.llm, model: deps.model, override });
+}
+
+export async function extractPriorityPreferences(params: {
+  llm: BuiltInLlmClient;
+  model: string;
+  override: AnalysisOverride;
+}): Promise<AnalysisObservation[] | null> {
+  const { llm, model, override } = params;
   // Skip API call in test/demo mode
   if (process.env.EXO_TEST_MODE === "true" || process.env.EXO_DEMO_MODE === "true") {
     return null;
   }
 
-  const anthropic = new Anthropic();
   const overrideDesc = formatOverrideDescription(override);
 
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 2048,
-    messages: [{
-      role: "user",
-      content: `You are analyzing why a user changed the priority classification of an email. Extract up to 3 generalizable rules about how this type of email should be prioritized in the future.
+  const parsed = await runLearnerJsonPrompt<Array<{
+    scope: string;
+    scopeValue: string | null;
+    content: string;
+    emailContext?: string;
+  }>>(
+    llm,
+    model,
+    `You are analyzing why a user changed the priority classification of an email. Extract up to 3 generalizable rules about how this type of email should be prioritized in the future.
 
 CONTEXT:
 - From: <sender_email>${override.senderEmail}</sender_email> (domain: <sender_domain>${override.senderDomain}</sender_domain>)
@@ -306,21 +339,10 @@ Content should be a clear directive for an email triage system, like:
 - "Emails with direct questions to me should never be skipped"
 
 Return [] if the override seems purely situational with no generalizable pattern.
-Respond with ONLY the JSON array.`,
-    }],
-  });
+Respond with ONLY the JSON array.`
+  );
 
-  const textBlock = response.content.find(b => b.type === "text");
-  const text = textBlock?.type === "text" ? textBlock.text : "";
-
-  const parsed = parseJsonArray<{
-    scope: string;
-    scopeValue: string | null;
-    content: string;
-    emailContext?: string;
-  }>(text);
-
-  if (!parsed || parsed.length === 0) return null;
+  if (!parsed || !Array.isArray(parsed) || parsed.length === 0) return null;
 
   return parsed
     .filter(item => item.content && typeof item.content === "string")
@@ -343,19 +365,20 @@ Respond with ONLY the JSON array.`,
 async function matchAnalysisDraftMemories(
   observations: AnalysisObservation[],
   draftMemories: DraftMemory[],
+  deps: LearnerLlmDeps,
 ): Promise<Array<{ observationIndex: number; matchedDraftMemoryId: string | null }>> {
   // Skip API call in test/demo mode
   if (process.env.EXO_TEST_MODE === "true" || process.env.EXO_DEMO_MODE === "true") {
     return observations.map((_, i) => ({ observationIndex: i, matchedDraftMemoryId: null }));
   }
 
-  const anthropic = new Anthropic();
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-5-20250929",
-    max_tokens: 1024,
-    messages: [{
-      role: "user",
-      content: `Match each new observation to an existing draft memory that describes the SAME underlying priority/classification preference, or mark it as new.
+  const parsed = await runLearnerJsonPrompt<Array<{
+    observationIndex: number;
+    matchedDraftMemoryId: string | null;
+  }>>(
+    deps.llm,
+    deps.model,
+    `Match each new observation to an existing draft memory that describes the SAME underlying priority/classification preference, or mark it as new.
 
 EXISTING DRAFT MEMORIES:
 ${draftMemories.map((dm, i) => `[${i}] id=${dm.id} [${dm.scope}${dm.scopeValue ? `:${dm.scopeValue}` : ""}] ${dm.content}`).join("\n")}
@@ -364,17 +387,10 @@ NEW OBSERVATIONS:
 ${observations.map((o, i) => `[${i}] [${o.scope}${o.scopeValue ? `:${o.scopeValue}` : ""}] ${o.content}`).join("\n")}
 
 For each observation, return the id of the matching draft memory, or null if new.
-Respond with ONLY a JSON array: [{"observationIndex": 0, "matchedDraftMemoryId": "..." or null}, ...]`,
-    }],
-  });
+Respond with ONLY a JSON array: [{"observationIndex": 0, "matchedDraftMemoryId": "..." or null}, ...]`
+  );
 
-  const text = response.content[0]?.type === "text" ? response.content[0].text : "";
-  const parsed = parseJsonArray<{
-    observationIndex: number;
-    matchedDraftMemoryId: string | null;
-  }>(text);
-
-  if (!parsed) {
+  if (!parsed || !Array.isArray(parsed)) {
     return observations.map((_, i) => ({ observationIndex: i, matchedDraftMemoryId: null }));
   }
 
@@ -394,19 +410,17 @@ async function classifyScope(
   reason: string,
   senderEmail: string,
   senderDomain: string,
+  deps: LearnerLlmDeps,
 ): Promise<{ scope: MemoryScope; scopeValue: string | null }> {
   // Skip API call in test/demo mode — default to person scope
   if (process.env.EXO_TEST_MODE === "true" || process.env.EXO_DEMO_MODE === "true") {
     return { scope: "person", scopeValue: senderEmail.toLowerCase() };
   }
 
-  const anthropic = new Anthropic();
-  const response = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 256,
-    messages: [{
-      role: "user",
-      content: `Classify the scope of this email priority preference.
+  const parsed = await runLearnerJsonPrompt<{ scope: string; scopeValue: string | null }>(
+    deps.llm,
+    deps.model,
+    `Classify the scope of this email priority preference.
 
 Preference: "${reason}"
 Sender: ${senderEmail} (domain: ${senderDomain})
@@ -421,24 +435,11 @@ Return ONLY JSON: {"scope":"...","scopeValue":"...or null"}
 For person: scopeValue = "${senderEmail.toLowerCase()}"
 For domain: scopeValue = "${senderDomain.toLowerCase()}"
 For category: scopeValue = "category-name"
-For global: scopeValue = null`,
-    }],
-  });
+For global: scopeValue = null`
+  );
 
-  const text = response.content[0]?.type === "text" ? response.content[0].text : "";
-  try {
-    const jsonStart = text.indexOf("{");
-    const jsonEnd = text.lastIndexOf("}");
-    if (jsonStart === -1 || jsonEnd === -1) throw new Error("no JSON");
-    const parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1)) as {
-      scope: string;
-      scopeValue: string | null;
-    };
-    return normalizeScope(parsed.scope, parsed.scopeValue, senderEmail.toLowerCase(), senderDomain.toLowerCase());
-  } catch {
-    // Default to person scope
-    return { scope: "person", scopeValue: senderEmail.toLowerCase() };
-  }
+  if (!parsed) return { scope: "person", scopeValue: senderEmail.toLowerCase() };
+  return normalizeScope(parsed.scope, parsed.scopeValue, senderEmail.toLowerCase(), senderDomain.toLowerCase());
 }
 
 function formatOverrideDescription(override: AnalysisOverride): string {

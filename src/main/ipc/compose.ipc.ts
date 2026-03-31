@@ -7,6 +7,8 @@ import { outboxService } from "../services/outbox-service";
 import { prefetchService } from "../services/prefetch-service";
 import { isNetworkError } from "../services/network-errors";
 import { learnFromDraftEdit } from "../services/draft-edit-learner";
+import { getConfig, getModelIdForFeature } from "./settings.ipc";
+import { createBuiltInLlmClient } from "../llm";
 import type { IpcResponse, LocalDraft, GmailDraft, ComposeMode, ReplyInfo, SendMessageOptions, SendMessageResult } from "../../shared/types";
 import { formatAddressesWithNames, extractThreadNames } from "../utils/address-formatting";
 
@@ -257,11 +259,16 @@ export function registerComposeIpc(): void {
         await new Promise((resolve) => setTimeout(resolve, 500));
         // Still trigger draft-edit learning in demo mode so we can test it
         if (options.threadId && !options.isForward) {
+          const config = getConfig();
+          const llm = createBuiltInLlmClient(config);
           learnFromDraftEdit({
             threadId: options.threadId,
             accountId: options.accountId,
             sentBodyHtml: options.bodyHtml || "",
             sentBodyText: options.bodyText,
+          }, {
+            llm,
+            model: getModelIdForFeature("drafts"),
           }).then((result) => {
             if (result && (result.promoted.length > 0 || result.draftMemoriesCreated > 0)) {
               console.log(`[DEMO] Draft edit learning: ${result.promoted.length} promoted, ${result.draftMemoriesCreated} draft memories created/voted`);
@@ -309,6 +316,8 @@ export function registerComposeIpc(): void {
         // After sending a reply, mark the thread as read and re-queue analysis
         // Skip for forwards — forwarding doesn't mean the user addressed the original conversation
         if (options.threadId && !options.isForward) {
+          const config = getConfig();
+          const llm = createBuiltInLlmClient(config);
           triggerThreadReanalysis(options.threadId, options.accountId);
           // Fire-and-forget: mark thread read so Gmail shows it as read
           markThreadAsReadAfterSend(client, options.threadId, options.accountId);
@@ -318,6 +327,9 @@ export function registerComposeIpc(): void {
             accountId: options.accountId,
             sentBodyHtml: options.bodyHtml || "",
             sentBodyText: options.bodyText,
+          }, {
+            llm,
+            model: getModelIdForFeature("drafts"),
           }).then((result) => {
             if (result && (result.promoted.length > 0 || result.draftMemoriesCreated > 0)) {
               console.log(`[Compose] Draft edit learning: ${result.promoted.length} promoted, ${result.draftMemoriesCreated} draft memories created/voted`);

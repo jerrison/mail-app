@@ -249,6 +249,9 @@ export function registerAnalysisIpc(): void {
           const win = BrowserWindow.getAllWindows()[0];
           if (win) win.webContents.send("analysis-override:learned", payload);
         };
+        const config = getConfig();
+        const llm = createBuiltInLlmClient(config);
+        const model = getModelIdForFeature("analysis");
 
         if (reason && reason.trim()) {
           // Explicit reason → save directly as promoted memory
@@ -259,6 +262,9 @@ export function registerAnalysisIpc(): void {
               senderDomain,
               reason: reason.trim(),
               emailId,
+            }, {
+              llm,
+              model,
             });
             if (saved) {
               sendLearnedEvent({
@@ -281,6 +287,9 @@ export function registerAnalysisIpc(): void {
               originalPriority,
               newNeedsReply,
               newPriority,
+            }, {
+              llm,
+              model,
             });
             if (result.promoted.length > 0 || result.draftMemoriesCreated > 0) {
               sendLearnedEvent(result);

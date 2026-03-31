@@ -1,5 +1,6 @@
 import type { ExtensionContext, ExtensionAPI, ExtensionModule } from "../../../shared/extension-types";
-import { getModelIdForFeature } from "../../../main/ipc/settings.ipc";
+import { createBuiltInLlmClient } from "../../../main/llm";
+import { getConfig, getModelIdForFeature } from "../../../main/ipc/settings.ipc";
 import { createWebSearchProvider } from "./web-search-provider";
 
 /**
@@ -13,7 +14,21 @@ const extension: ExtensionModule = {
     // Register the enrichment provider.
     // Model resolver is injected here (entry point) rather than deep in the provider,
     // keeping the provider decoupled from Electron main-process internals.
-    const provider = createWebSearchProvider(context, () => getModelIdForFeature("senderLookup"));
+    const provider = createWebSearchProvider(context, {
+      resolveModel: () => getModelIdForFeature("senderLookup"),
+      searchWeb: async ({ model, prompt }) => {
+        const llm = createBuiltInLlmClient(getConfig());
+        const response = await llm.generate({
+          model,
+          input: prompt,
+          mode: "json",
+          webSearch: true,
+          maxOutputTokens: 200,
+        });
+
+        return response.text;
+      },
+    });
     api.registerEnrichmentProvider(provider);
 
     context.logger.info("Web-search extension activated");

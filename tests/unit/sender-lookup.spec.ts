@@ -6,6 +6,8 @@
  * We re-implement the pure helper functions here and test the logic directly.
  */
 import { test, expect } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // =============================================================================
 // Re-implemented pure functions from web-search-provider.ts
@@ -562,5 +564,24 @@ test.describe("cache key computation", () => {
   test("cache expiration constant is 7 days in milliseconds", () => {
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
     expect(SEVEN_DAYS_MS).toBe(604_800_000);
+  });
+});
+
+// =============================================================================
+// Tests: provider-neutral web search wiring
+// =============================================================================
+
+test.describe("provider-neutral sender lookup wiring", () => {
+  test("web-search provider uses injected search callback instead of direct Anthropic client", () => {
+    const providerPath = resolve(
+      process.cwd(),
+      "src/extensions/mail-ext-web-search/src/web-search-provider.ts",
+    );
+    const source = readFileSync(providerPath, "utf8");
+
+    expect(source).toContain("searchWeb");
+    expect(source).toContain("deps.searchWeb");
+    expect(source).not.toContain("new Anthropic(");
+    expect(source).not.toContain("@anthropic-ai/sdk");
   });
 });

@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type {
   ExtensionContext,
   EnrichmentProvider,
@@ -77,6 +76,11 @@ export interface SenderProfileData {
   lookupAt: number;
   isReminder: boolean;
 }
+
+export type SenderLookupDeps = {
+  resolveModel: () => string;
+  searchWeb: (args: { model: string; prompt: string }) => Promise<string>;
+};
 
 /**
  * Strip citation markup from Claude's web search responses.
@@ -185,10 +189,8 @@ function validateProfileData(
  */
 export function createWebSearchProvider(
   context: ExtensionContext,
-  getModelId: () => string,
+  deps: SenderLookupDeps,
 ): EnrichmentProvider {
-  const client = new Anthropic();
-
   return {
     id: "sender-lookup",
     panelId: "sender-profile",
@@ -246,23 +248,10 @@ export function createWebSearchProvider(
       }
 
       try {
-        // Use Claude with web search to find information
         const searchQuery = buildSearchQuery(senderName, realSenderEmail);
-
-        const response = await client.messages.create({
-          model: getModelId(),
-          max_tokens: 200, // Responses are ~100 tokens
-          tools: [
-            {
-              type: "web_search_20250305",
-              name: "web_search",
-              max_uses: 1, // 1 search is usually enough
-            },
-          ],
-          messages: [
-            {
-              role: "user",
-              content: `I received an email from "${senderName}" with email address "${realSenderEmail}".
+        const jsonText = await deps.searchWeb({
+          model: deps.resolveModel(),
+          prompt: `I received an email from "${senderName}" with email address "${realSenderEmail}".
 
 Please search the web to find information about who this person is. Look for:
 - Their professional role/title
@@ -285,17 +274,7 @@ If you can't find specific information, return:
   "name": "${senderName}",
   "summary": "No public information found for this person."
 }`,
-            },
-          ],
         });
-
-        // Extract the text response
-        let jsonText = "";
-        for (const block of response.content) {
-          if (block.type === "text") {
-            jsonText += block.text;
-          }
-        }
 
         // Parse the JSON response - handle various formats Claude might return
         const profileData = parseProfileResponse(jsonText, senderName, context);

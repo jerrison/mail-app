@@ -6,6 +6,7 @@
  * We re-implement the pure helper functions here and test the logic directly.
  */
 import { test, expect } from "@playwright/test";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -583,5 +584,75 @@ test.describe("provider-neutral sender lookup wiring", () => {
     expect(source).toContain("deps.searchWeb");
     expect(source).not.toContain("new Anthropic(");
     expect(source).not.toContain("@anthropic-ai/sdk");
+  });
+
+  test("createWebSearchProvider enrich uses injected callbacks and parses profile response", () => {
+    const providerPath = resolve(
+      process.cwd(),
+      "src/extensions/mail-ext-web-search/src/web-search-provider.ts",
+    );
+
+    const script = `
+      import providerModule from ${JSON.stringify(providerPath)};
+      const { createWebSearchProvider } = providerModule;
+
+      const calls = [];
+      const cache = new Map();
+      const context = {
+        logger: { info() {}, warn() {}, error() {}, debug() {} },
+        storage: {
+          async get(key) { return cache.has(key) ? cache.get(key) : null; },
+          async set(key, value) { cache.set(key, value); },
+        },
+      };
+
+      const provider = createWebSearchProvider(context, {
+        resolveModel: () => "unit-model-sender-lookup",
+        searchWeb: async ({ model, prompt }) => {
+          calls.push({ model, prompt });
+          return JSON.stringify({
+            name: "Alice Sender",
+            summary: "Staff engineer at Acme.",
+            title: "Staff Engineer",
+            company: "Acme",
+            linkedinUrl: "https://linkedin.com/in/alicesender"
+          });
+        },
+      });
+
+      const email = { id: "email-1", from: "Alice Sender <alice@acme.com>" };
+      const result = await provider.enrich(email, [email]);
+
+      process.stdout.write(JSON.stringify({ calls, result }));
+    `;
+
+    const run = spawnSync(process.execPath, ["--import", "tsx", "--eval", script], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+
+    expect(run.status, run.stderr).toBe(0);
+    const parsed = JSON.parse(run.stdout.trim()) as {
+      calls: Array<{ model: string; prompt: string }>;
+      result: {
+        panelId: string;
+        data: {
+          name: string;
+          company: string;
+          title: string;
+          linkedinUrl: string;
+        };
+      } | null;
+    };
+
+    expect(parsed.calls).toHaveLength(1);
+    expect(parsed.calls[0]?.model).toBe("unit-model-sender-lookup");
+    expect(parsed.calls[0]?.prompt).toContain("Alice Sender");
+    expect(parsed.calls[0]?.prompt).toContain("alice@acme.com");
+    expect(parsed.calls[0]?.prompt).toContain("Please search the web");
+    expect(parsed.result?.panelId).toBe("sender-profile");
+    expect(parsed.result?.data.name).toBe("Alice Sender");
+    expect(parsed.result?.data.company).toBe("Acme");
+    expect(parsed.result?.data.title).toBe("Staff Engineer");
   });
 });

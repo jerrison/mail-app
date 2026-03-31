@@ -345,6 +345,54 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
   agentChat: "opus",
 };
 
+export const BUILT_IN_LLM_PROVIDERS = ["anthropic", "openai"] as const;
+export const FEATURE_QUALITIES = ["fast", "balanced", "best"] as const;
+
+export const BuiltInLlmProviderIdSchema = z.enum(BUILT_IN_LLM_PROVIDERS);
+export type BuiltInLlmProviderId = z.infer<typeof BuiltInLlmProviderIdSchema>;
+
+export const FeatureQualitySchema = z.enum(FEATURE_QUALITIES);
+export type FeatureQuality = z.infer<typeof FeatureQualitySchema>;
+
+export const FeatureQualityConfigSchema = z.object({
+  analysis: FeatureQualitySchema.default("balanced"),
+  drafts: FeatureQualitySchema.default("balanced"),
+  refinement: FeatureQualitySchema.default("balanced"),
+  calendaring: FeatureQualitySchema.default("balanced"),
+  archiveReady: FeatureQualitySchema.default("balanced"),
+  senderLookup: FeatureQualitySchema.default("fast"),
+  agentDrafter: FeatureQualitySchema.default("balanced"),
+  agentChat: FeatureQualitySchema.default("best"),
+});
+
+export type FeatureQualityConfig = z.infer<typeof FeatureQualityConfigSchema>;
+
+export const DEFAULT_FEATURE_QUALITY_CONFIG: FeatureQualityConfig = {
+  analysis: "balanced",
+  drafts: "balanced",
+  refinement: "balanced",
+  calendaring: "balanced",
+  archiveReady: "balanced",
+  senderLookup: "fast",
+  agentDrafter: "balanced",
+  agentChat: "best",
+};
+
+export const LlmConfigSchema = z.object({
+  defaultProvider: BuiltInLlmProviderIdSchema.default("anthropic"),
+  providers: z.object({
+    anthropic: z.object({
+      apiKey: z.string().optional(),
+    }).optional(),
+    openai: z.object({
+      apiKey: z.string().optional(),
+    }).optional(),
+  }).default({}),
+  featureTiers: FeatureQualityConfigSchema.default(DEFAULT_FEATURE_QUALITY_CONFIG),
+});
+
+export type LlmConfig = z.infer<typeof LlmConfigSchema>;
+
 /** Resolve a model tier to its concrete model ID string. */
 export function resolveModelId(tier: ModelTier): string {
   return MODEL_TIER_IDS[tier];
@@ -357,6 +405,7 @@ export const ConfigSchema = z.object({
   // via getModelIdForFeature(). Kept in the schema so existing config files parse without error.
   model: z.string().default("claude-sonnet-4-20250514"),
   modelConfig: ModelConfigSchema.optional(),
+  llm: LlmConfigSchema.optional(),
   dryRun: z.boolean().default(false),
   anthropicApiKey: z.string().optional(),
   analysisPrompt: z.string().default(DEFAULT_ANALYSIS_PROMPT),

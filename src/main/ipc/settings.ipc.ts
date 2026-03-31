@@ -3,6 +3,7 @@ import Store from "electron-store";
 import {
   type Config,
   type EAConfig,
+  type FeatureQualityConfig,
   type IpcResponse,
   type ThemePreference,
   type ModelConfig,
@@ -14,7 +15,6 @@ import {
   DEFAULT_AGENT_DRAFTER_PROMPT,
   DEFAULT_MODEL_CONFIG,
   MODEL_TIER_IDS,
-  resolveModelId,
 } from "../../shared/types";
 import { resetAnalyzer } from "./analysis.ipc";
 import { resetArchiveReadyAnalyzer } from "./archive-ready.ipc";
@@ -23,6 +23,12 @@ import { agentCoordinator } from "../agents/agent-coordinator";
 import { getSenderProfile, clearInboxAnalyses, clearInboxPendingDraftsAndTraces, clearInboxArchiveReady, type SenderProfile } from "../db";
 import { getEnrichmentBySender } from "../extensions/enrichment-store";
 import { autoUpdateService } from "../services/auto-updater";
+import {
+  normalizeLlmConfig,
+  resolveBuiltInProviderId,
+  resolveDefaultAgentProviderId,
+  resolveFeatureModelId,
+} from "../llm/config";
 
 import { getDataDir } from "../data-dir";
 
@@ -110,10 +116,24 @@ export function getModelConfig(): ModelConfig {
   return { ...DEFAULT_MODEL_CONFIG, ...config.modelConfig };
 }
 
+export function getLlmConfig() {
+  return normalizeLlmConfig(getConfig());
+}
+
+export function getBuiltInProviderId() {
+  return resolveBuiltInProviderId(getConfig());
+}
+
+export function getDefaultAgentProviderId() {
+  return resolveDefaultAgentProviderId(getConfig());
+}
+
 /** Resolve the concrete model ID for a given feature. */
-export function getModelIdForFeature(feature: keyof ModelConfig): string {
-  const mc = getModelConfig();
-  return resolveModelId(mc[feature]);
+export function getModelIdForFeature(
+  feature: keyof FeatureQualityConfig,
+  provider = getBuiltInProviderId(),
+): string {
+  return resolveFeatureModelId(getConfig(), feature, provider);
 }
 
 export function registerSettingsIpc(): void {

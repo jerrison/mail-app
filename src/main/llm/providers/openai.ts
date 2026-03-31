@@ -16,7 +16,7 @@ export class OpenAIBuiltInLlmProvider implements BuiltInLlmProvider {
 
     return {
       text: response.output_text,
-      requestId: response._request_id,
+      requestId: response._request_id ?? undefined,
     };
   }
 }

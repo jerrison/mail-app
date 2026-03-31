@@ -283,7 +283,7 @@ test.describe("Dark Mode Visual Audit", () => {
     // SECTION 4: Compose Flow (Tests 22-26)
     // ==========================================
 
-    const composeBtn = page.locator("button:has-text('Compose')");
+    const composeBtn = page.locator("button[title='Compose (C)']").first();
     await composeBtn.click();
     await page.waitForTimeout(500);
     await page.waitForSelector("text=New Message", { timeout: 5000 });

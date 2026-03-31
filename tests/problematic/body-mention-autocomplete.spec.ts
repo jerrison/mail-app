@@ -1,9 +1,5 @@
 /**
- * E2E Tests for @mention autocomplete in draft body.
- *
- * MOVED TO PROBLEMATIC: The @mention feature was built for DraftEditor (textarea-based),
- * which was removed in PR #86. These tests need to be reimplemented for the
- * ProseMirror-based inline reply editor once @mention support is added there.
+ * E2E tests for @mention autocomplete in the ProseMirror inline reply editor.
  */
 import { test, expect, Page, ElectronApplication } from "@playwright/test";
 import { launchElectronApp } from "../e2e/launch-helpers";
@@ -32,69 +28,70 @@ test.describe("Body @mention Autocomplete → CC", () => {
     }
   });
 
-  /** Navigate to an email with a pending draft so DraftEditor textarea is visible */
-  async function navigateToDraftEditor() {
-    // Click a HIGH priority email that has a pre-generated draft
-    const emailItem = page.locator("button").filter({ hasText: /Sarah.*Chen|Project Alpha/i }).first();
+  async function navigateToInlineReply() {
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+
+    const emailItem = page.locator("button").filter({ hasText: /Garry Tan|Q3 Quarterly Report/i }).first();
     await expect(emailItem).toBeVisible({ timeout: 10000 });
     await emailItem.click();
     await page.waitForTimeout(500);
 
-    // Generate draft if not already there
-    const generateButton = page.locator("button:has-text('Generate Draft')");
-    if (await generateButton.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await generateButton.click();
-      // Demo mode has ~800ms delay
-      await page.waitForTimeout(2000);
-    }
+    const replyButton = page.locator("button[title='Reply All']").first();
+    await expect(replyButton).toBeVisible({ timeout: 5000 });
+    await replyButton.click();
+    await page.waitForTimeout(500);
 
-    // Wait for the DraftEditor textarea to be visible
-    const textarea = page.locator("textarea[placeholder='Draft reply...']");
-    await expect(textarea).toBeVisible({ timeout: 5000 });
-    return textarea;
+    const inlineCompose = page.locator("[data-testid='inline-compose']").first();
+    await expect(inlineCompose).toBeVisible({ timeout: 5000 });
+
+    const editor = inlineCompose.locator(".ProseMirror").first();
+    await expect(editor).toBeVisible({ timeout: 5000 });
+
+    return { inlineCompose, editor };
   }
 
   test("@mention shows dropdown and Tab adds person to CC", async () => {
-    const textarea = await navigateToDraftEditor();
+    const { inlineCompose, editor } = await navigateToInlineReply();
 
     // Place cursor at end and type @ali to trigger mention
-    await textarea.click();
-    await textarea.press("End");
-    await textarea.pressSequentially("\n@ali", { delay: 50 });
+    await editor.click();
+    await page.keyboard.type("\n@ali", { delay: 50 });
 
     // Wait for mention dropdown
     const mentionDropdown = page.locator("[data-testid='mention-dropdown']");
     await expect(mentionDropdown).toBeVisible({ timeout: 3000 });
+    await expect(
+      page.locator("[data-testid='mention-suggestion']").filter({ hasText: "Alice Johnson" })
+    ).toBeVisible({ timeout: 3000 });
 
     // First suggestion should be auto-selected (selectedIndex=0), press Tab to confirm
-    await textarea.press("Tab");
+    await page.keyboard.press("Tab");
 
     // The mention dropdown should close
     await expect(mentionDropdown).not.toBeVisible({ timeout: 2000 });
 
     // The CC section should now be visible with Alice's email
-    const ccSection = page.locator("[data-testid='address-input-cc']");
+    const ccSection = inlineCompose.locator("[data-testid='address-input-cc']");
     await expect(ccSection).toBeVisible({ timeout: 3000 });
 
-    const ccChip = page.locator("[data-testid='address-input-cc'] [data-testid='address-chip']").filter({ hasText: "alice@example.com" });
+    const ccChip = inlineCompose
+      .locator("[data-testid='address-input-cc'] [data-testid='address-chip']")
+      .filter({ hasText: "alice@example.com" });
     await expect(ccChip).toBeVisible({ timeout: 2000 });
 
-    // The body text should contain Alice's first name (not @ali or full name)
-    const bodyText = await textarea.inputValue();
-    expect(bodyText).toContain("Alice");
-    expect(bodyText).not.toContain("Alice Johnson");
-    expect(bodyText).not.toContain("@ali");
+    await expect(editor).toContainText("Alice", { timeout: 2000 });
+    await expect(editor).not.toContainText("@ali");
   });
 
   test("clicking @mention suggestion adds person to CC", async () => {
-    // Body textarea should still be visible from previous test
-    const textarea = page.locator("textarea[placeholder='Draft reply...']");
-    await expect(textarea).toBeVisible({ timeout: 5000 });
+    const { inlineCompose, editor } = await navigateToInlineReply();
 
     // Type @bob to trigger mention
-    await textarea.click();
-    await textarea.press("End");
-    await textarea.pressSequentially("\n@bob", { delay: 50 });
+    await editor.click();
+    await page.keyboard.type("\n@bob", { delay: 50 });
 
     // Wait for mention dropdown
     const mentionDropdown = page.locator("[data-testid='mention-dropdown']");
@@ -109,12 +106,12 @@ test.describe("Body @mention Autocomplete → CC", () => {
     await expect(mentionDropdown).not.toBeVisible({ timeout: 2000 });
 
     // Bob should be added to CC
-    const bobChip = page.locator("[data-testid='address-input-cc'] [data-testid='address-chip']").filter({ hasText: "bob@example.com" });
+    const bobChip = inlineCompose
+      .locator("[data-testid='address-input-cc'] [data-testid='address-chip']")
+      .filter({ hasText: "bob@example.com" });
     await expect(bobChip).toBeVisible({ timeout: 2000 });
 
-    // Body should contain Bob's first name only
-    const bodyText = await textarea.inputValue();
-    expect(bodyText).toContain("Bob");
-    expect(bodyText).not.toContain("Bob Smith");
+    await expect(editor).toContainText("Bob", { timeout: 2000 });
+    await expect(editor).not.toContainText("@bob");
   });
 });

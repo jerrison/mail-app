@@ -1,8 +1,5 @@
-import { test, expect, _electron as electron, Page, ElectronApplication } from "@playwright/test";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { test, expect, Page, ElectronApplication } from "@playwright/test";
+import { launchElectronApp } from "../e2e/launch-helpers";
 
 /**
  * E2E Tests: Keyboard shortcuts work after clicking inside an email body iframe.
@@ -16,23 +13,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Run with: npm run test:e2e -- keyboard-shortcuts-iframe
  */
 
-async function launchElectronApp(): Promise<{ app: ElectronApplication; page: Page }> {
-  const app = await electron.launch({
-    args: [path.join(__dirname, "../../out/main/index.js")],
-    env: {
-      ...process.env,
-      NODE_ENV: "test",
-      EXO_DEMO_MODE: "true",
-    },
-  });
-
-  const window = await app.firstWindow();
-  await window.waitForLoadState("domcontentloaded");
-  await window.waitForSelector("text=Exo", { timeout: 15000 });
-
-  return { app, page: window };
-}
-
 /**
  * Opens an email thread by clicking on a list item that matches the given text,
  * then waits for the full-view detail to appear.
@@ -45,13 +25,23 @@ async function openEmail(page: Page, matchText: string) {
   await page.waitForTimeout(800);
 }
 
+async function focusHtmlEmailBody(page: Page) {
+  const iframe = page.locator('iframe[title="Email content"]').first();
+  await expect(iframe).toBeVisible({ timeout: 5000 });
+
+  const iframeBody = page.frameLocator('iframe[title="Email content"]').first().locator("body");
+  await iframeBody.click();
+  await page.waitForTimeout(200);
+  return iframeBody;
+}
+
 test.describe("Keyboard shortcuts work after clicking email body iframe", () => {
   test.describe.configure({ mode: "serial" });
   let electronApp: ElectronApplication;
   let page: Page;
 
-  test.beforeAll(async () => {
-    const result = await launchElectronApp();
+  test.beforeAll(async ({}, testInfo) => {
+    const result = await launchElectronApp({ workerIndex: testInfo.workerIndex });
     electronApp = result.app;
     page = result.page;
 
@@ -70,21 +60,12 @@ test.describe("Keyboard shortcuts work after clicking email body iframe", () => 
 
   test("Escape returns to inbox after clicking inside HTML email iframe", async () => {
     // Open an HTML email (Q3 Quarterly Report has a rich HTML body rendered in an iframe)
-    await openEmail(page, "Emily Watson");
+    await openEmail(page, "Q3 Quarterly Report");
 
-    // Wait for the iframe to load
-    const iframe = page.locator('iframe[title="Email content"]').first();
-    await expect(iframe).toBeVisible({ timeout: 5000 });
-
-    // Click inside the iframe body to move focus into it
-    const iframeBody = page.frameLocator('iframe[title="Email content"]').first().locator("body");
-    await iframeBody.click();
-
-    // Small delay to ensure focus has moved to the iframe
-    await page.waitForTimeout(200);
+    const iframeBody = await focusHtmlEmailBody(page);
 
     // Press Escape — should go back to split/inbox view
-    await page.keyboard.press("Escape");
+    await iframeBody.press("Escape");
     await page.waitForTimeout(500);
 
     // Verify: we should be back to the inbox list view (no full detail visible)
@@ -99,19 +80,12 @@ test.describe("Keyboard shortcuts work after clicking email body iframe", () => 
 
   test("Enter opens reply after clicking inside HTML email iframe", async () => {
     // Open an HTML email again
-    await openEmail(page, "Emily Watson");
+    await openEmail(page, "Q3 Quarterly Report");
 
-    // Wait for the iframe to load
-    const iframe = page.locator('iframe[title="Email content"]').first();
-    await expect(iframe).toBeVisible({ timeout: 5000 });
-
-    // Click inside the iframe body
-    const iframeBody = page.frameLocator('iframe[title="Email content"]').first().locator("body");
-    await iframeBody.click();
-    await page.waitForTimeout(200);
+    const iframeBody = await focusHtmlEmailBody(page);
 
     // Press Enter — should open inline reply
-    await page.keyboard.press("Enter");
+    await iframeBody.press("Enter");
     await page.waitForTimeout(1000);
 
     // Verify: inline reply form should be visible
@@ -134,18 +108,12 @@ test.describe("Keyboard shortcuts work after clicking email body iframe", () => 
     await page.waitForTimeout(300);
 
     // Open an HTML email
-    await openEmail(page, "Emily Watson");
+    await openEmail(page, "Q3 Quarterly Report");
 
-    const iframe = page.locator('iframe[title="Email content"]').first();
-    await expect(iframe).toBeVisible({ timeout: 5000 });
-
-    // Click inside the iframe body
-    const iframeBody = page.frameLocator('iframe[title="Email content"]').first().locator("body");
-    await iframeBody.click();
-    await page.waitForTimeout(200);
+    const iframeBody = await focusHtmlEmailBody(page);
 
     // Press Escape to go back to list (verifying navigation shortcuts work)
-    await page.keyboard.press("Escape");
+    await iframeBody.press("Escape");
     await page.waitForTimeout(500);
 
     // Now press 'j' to navigate down in the list
@@ -166,16 +134,10 @@ test.describe("Keyboard shortcuts work after clicking email body iframe", () => 
     // Open a different HTML email - the Product Update email
     await openEmail(page, "Product Team");
 
-    const iframe = page.locator('iframe[title="Email content"]').first();
-    await expect(iframe).toBeVisible({ timeout: 5000 });
-
-    // Click inside this iframe
-    const iframeBody = page.frameLocator('iframe[title="Email content"]').first().locator("body");
-    await iframeBody.click();
-    await page.waitForTimeout(200);
+    const iframeBody = await focusHtmlEmailBody(page);
 
     // Escape should still work
-    await page.keyboard.press("Escape");
+    await iframeBody.press("Escape");
     await page.waitForTimeout(500);
 
     const backButton = page.locator("button").filter({ hasText: "Back" }).first();
@@ -187,18 +149,12 @@ test.describe("Keyboard shortcuts work after clicking email body iframe", () => 
 
   test("r shortcut opens reply after clicking inside HTML email iframe", async () => {
     // Open an HTML email
-    await openEmail(page, "Emily Watson");
+    await openEmail(page, "Q3 Quarterly Report");
 
-    const iframe = page.locator('iframe[title="Email content"]').first();
-    await expect(iframe).toBeVisible({ timeout: 5000 });
-
-    // Click inside the iframe body
-    const iframeBody = page.frameLocator('iframe[title="Email content"]').first().locator("body");
-    await iframeBody.click();
-    await page.waitForTimeout(200);
+    const iframeBody = await focusHtmlEmailBody(page);
 
     // Press 'r' — should open reply
-    await page.keyboard.press("r");
+    await iframeBody.press("r");
     await page.waitForTimeout(1000);
 
     // Verify: reply form should be visible
